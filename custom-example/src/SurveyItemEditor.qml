@@ -33,14 +33,14 @@ TransectStyleComplexItemEditor {
     property real   _margin:        ScreenTools.defaultFontPixelWidth / 2
     property var    _missionItem:   missionItem
     property bool   _customSurvey:  customSurveyManager.isCustomSurvey(missionItem)
-    property var    _customQuadrants: []
+    property var    _customRegions: []
 
-    function _refreshCustomQuadrants() {
+    function _refreshCustomRegions() {
         _customSurvey = customSurveyManager.isCustomSurvey(missionItem)
-        _customQuadrants = _customSurvey ? customSurveyManager.regionPolygons(missionItem) : []
+        _customRegions = _customSurvey ? customSurveyManager.regionPolygons(missionItem) : []
     }
 
-    Component.onCompleted: _refreshCustomQuadrants()
+    Component.onCompleted: _refreshCustomRegions()
 
 
         
@@ -50,7 +50,7 @@ TransectStyleComplexItemEditor {
         target: missionItem.surveyAreaPolygon
 
         function onPathChanged() {
-            _refreshCustomQuadrants()
+            _refreshCustomRegions()
         }
     }
 
@@ -59,7 +59,7 @@ TransectStyleComplexItemEditor {
 
         function onCustomSurveyChanged(item) {
             if (item === missionItem) {
-                _refreshCustomQuadrants()
+                _refreshCustomRegions()
             }
         }
     }
@@ -69,7 +69,7 @@ TransectStyleComplexItemEditor {
         target: customSurveyManager
 
         function onRegionCountChanged() {
-            _refreshCustomQuadrants()
+            _refreshCustomRegions()
 
             regionCountSpinBox.value =
                 customSurveyManager.regionCountForSurvey(
@@ -151,28 +151,14 @@ TransectStyleComplexItemEditor {
             }
 
             SectionHeader {
-                id:                 customQuadrantsHeader
+                id:                 customRegionsHeader
                 Layout.columnSpan:  2
                 Layout.fillWidth:   true
-                text:               qsTr("Custom Quadrants")
+                text:               qsTr("Custom Regions")
                 visible:            _customSurvey && !forPresets
             }
 
             ColumnLayout {
-
-Rectangle {
-    color: "red"
-    height: 40
-    width: parent.width
-
-    QGCLabel {
-        anchors.centerIn: parent
-        text: "CUSTOM SURVEY EDITOR LOADED"
-        color: "white"
-    }
-}
-
-
 
             RowLayout {
                 spacing: ScreenTools.defaultFontPixelWidth
@@ -193,10 +179,10 @@ Rectangle {
                 Layout.columnSpan:  2
                 Layout.fillWidth:   true
                 spacing:            _margin
-                visible:            customQuadrantsHeader.visible && customQuadrantsHeader.checked
+                visible:            customRegionsHeader.visible && customRegionsHeader.checked
 
                 Repeater {
-                    model: _customQuadrants
+                    model: _customRegions
 
                     RowLayout {
                         Layout.fillWidth: true
@@ -221,30 +207,30 @@ Rectangle {
                     wrapMode:           Text.WordWrap
                     color:              QGroundControl.globalPalette.warningText
                     text:               customSurveyManager.lastError
-                    visible:            _customQuadrants.length === 0 && customSurveyManager.lastError !== ""
+                    visible:            _customRegions.length === 0 && customSurveyManager.lastError !== ""
                 }
 
                 QGCButton {
                     Layout.alignment:   Qt.AlignHCenter
-                    text:               qsTr("Save Quadrant Plans")
-                    enabled:            missionItem.surveyAreaPolygon.isValid && _customQuadrants.length > 0
+                    text:               qsTr("Save Region Plans")
+                    enabled:            missionItem.surveyAreaPolygon.isValid && _customRegions.length > 0
 
-                    onClicked:          quadrantFolderDialog.openForLoad()
+                    onClicked:          regionFolderDialog.openForLoad()
                 }
             }
         }
     }
 
     QGCFileDialog {
-        id:             quadrantFolderDialog
+        id:             regionFolderDialog
         folder:         QGroundControl.settingsManager.appSettings.missionSavePath
         title:          qsTr("Select Output Folder")
         selectFolder:   true
 
         onAcceptedForLoad: (folder) => {
             customSurveyManager.saveRegionPlans(missionItem.masterController, missionItem, folder)
-            mainWindow.showMessageDialog(qsTr("Custom Quadrants"), customSurveyManager.lastError)
-            _refreshCustomQuadrants()
+            mainWindow.showMessageDialog(qsTr("Custom Regions"), customSurveyManager.lastError)
+            _refreshCustomRegions()
             close()
         }
     }
