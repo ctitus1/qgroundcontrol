@@ -428,5 +428,13 @@ QUrl CustomOverrideInterceptor::intercept(const QUrl &url, QQmlAbstractUrlInterc
         break;
     }
 
-    return url;
+    
+qDebug() << "INTERCEPT:" << url;
+
+if (url.toString().contains("SurveyItemEditor.qml")) {
+    qDebug() << "Redirecting SurveyItemEditor";
+}
+
+return url;
+
 }

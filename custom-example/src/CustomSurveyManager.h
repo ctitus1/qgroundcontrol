@@ -29,12 +29,25 @@ class CustomSurveyManager : public QObject
     Q_OBJECT
     Q_PROPERTY(QString customSurveyName READ customSurveyName CONSTANT)
     Q_PROPERTY(QString lastError READ lastError NOTIFY lastErrorChanged)
+    Q_PROPERTY(int regionCount READ regionCount WRITE setDivisionCount NOTIFY regionCountChanged)
 
 public:
     explicit CustomSurveyManager(QObject* parent = nullptr);
 
     QString customSurveyName() const { return QStringLiteral("custom"); }
     QString lastError() const { return _lastError; }
+
+    int regionCount() const { return _regionCount; }
+    void setDivisionCount(int count) {
+        count = qMax(1, count);
+        if (_regionCount != count) {
+            _regionCount = count;
+            emit regionCountChanged();
+            for (QObject* item : std::as_const(_customSurveyItems)) {
+                emit customSurveyChanged(item);
+            }
+        }
+    }
 
     Q_INVOKABLE bool markCustomSurvey(QObject* item);
     Q_INVOKABLE bool isCustomSurvey(QObject* item) const;
@@ -46,6 +59,7 @@ public:
 
 signals:
     void lastErrorChanged();
+    void regionCountChanged();
     void customSurveyChanged(QObject* item);
 
 private:
@@ -76,4 +90,5 @@ private:
 
     QSet<QObject*> _customSurveyItems;
     QString _lastError;
+    int _regionCount = 1;
 };

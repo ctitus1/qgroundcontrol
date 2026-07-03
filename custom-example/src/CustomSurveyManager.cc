@@ -52,6 +52,7 @@ constexpr const char* kQuadrantPolygonKey = "polygon";
 constexpr const char* kQuadrantAreaKey = "area";
 constexpr const char* kExportedQuadrantKey = "exportedQuadrant";
 constexpr double kPointEpsilonMeters = 0.05;
+constexpr int kDivisionCount = 3;    // Change this to 2,3,4,...
 
 bool pointsClose(const QPointF& a, const QPointF& b)
 {
@@ -402,29 +403,43 @@ QList<CustomSurveyManager::QuadrantInfo> CustomSurveyManager::_buildQuadrants(QO
         return {};
     }
 
-    const qreal midX = (minX + maxX) / 2.0;
-    const qreal midY = (minY + maxY) / 2.0;
+    
+    const int regions = qMax(1, _regionCount);
 
-    struct RectInfo {
-        QString name;
-        QString fileSuffix;
-        QRectF rect;
-    };
-    const QList<RectInfo> rects = {
-        { tr("Northwest"), QStringLiteral("northwest"), QRectF(QPointF(minX, midY), QPointF(midX, maxY)).normalized() },
-        { tr("Northeast"), QStringLiteral("northeast"), QRectF(QPointF(midX, midY), QPointF(maxX, maxY)).normalized() },
-        { tr("Southwest"), QStringLiteral("southwest"), QRectF(QPointF(minX, minY), QPointF(midX, midY)).normalized() },
-        { tr("Southeast"), QStringLiteral("southeast"), QRectF(QPointF(midX, minY), QPointF(maxX, midY)).normalized() },
-    };
+    if (regions == 1) {
+        return { QuadrantInfo{
+            tr("Survey"),
+            QStringLiteral("survey"),
+            surveyItem->surveyAreaPolygon()->coordinateList()
+        } };
+    }
+    const qreal cellWidth  = (maxX - minX) / regions;
+    const qreal cellHeight = (maxY - minY) / regions;
 
     QList<QuadrantInfo> quadrants;
-    for (const RectInfo& rectInfo: rects) {
-        QList<QPointF> clipped = _clipPolygonToRect(localPolygon, rectInfo.rect);
-        closeAndClean(clipped);
-        if (clipped.count() >= 3) {
-            quadrants.append({ rectInfo.name, rectInfo.fileSuffix, _pointsToCoordinates(clipped, origin) });
+
+    for (int row = 0; row < regions; ++row) {
+        for (int col = 0; col < regions; ++col) {
+
+            QRectF rect(
+                QPointF(minX + col * cellWidth,
+                        minY + row * cellHeight),
+                QSizeF(cellWidth, cellHeight));
+
+            QList<QPointF> clipped = _clipPolygonToRect(localPolygon, rect);
+
+            closeAndClean(clipped);
+
+            if (clipped.count() >= 3) {
+                QuadrantInfo q;
+                q.name = QString("Cell %1,%2").arg(row + 1).arg(col + 1);
+                q.fileSuffix = QString("r%1c%2").arg(row + 1).arg(col + 1);
+                q.polygon = _pointsToCoordinates(clipped, origin);
+                quadrants.append(q);
+            }
         }
     }
+
 
     if (quadrants.isEmpty()) {
         errorString = tr("No non-empty quadrants were generated.");

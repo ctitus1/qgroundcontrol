@@ -53,6 +53,15 @@ TransectStyleComplexItemEditor {
         }
     }
 
+
+    Connections {
+        target: customSurveyManager
+
+        function onDivisionCountChanged() {
+            _refreshCustomQuadrants()
+        }
+    }
+
     Component {
         id: _transectValuesComponent
 
@@ -71,7 +80,7 @@ TransectStyleComplexItemEditor {
 
             QGCSlider {
                 id:                     angleSlider
-                from:           0
+                from: 1
                 to:           359
                 stepSize:               1
                 tickmarksEnabled:       false
@@ -135,6 +144,36 @@ TransectStyleComplexItemEditor {
             }
 
             ColumnLayout {
+
+Rectangle {
+    color: "red"
+    height: 40
+    width: parent.width
+
+    QGCLabel {
+        anchors.centerIn: parent
+        text: "CUSTOM SURVEY EDITOR LOADED"
+        color: "white"
+    }
+}
+
+
+
+            RowLayout {
+                spacing: ScreenTools.defaultFontPixelWidth
+
+                QGCLabel {
+                    text: "Regions"
+                }
+
+                SpinBox {
+                    from: 1
+                    to: 20
+                    value: customSurveyManager.regionCount
+                    onValueChanged: customSurveyManager.regionCount = value
+                }
+            }
+
                 Layout.columnSpan:  2
                 Layout.fillWidth:   true
                 spacing:            _margin
