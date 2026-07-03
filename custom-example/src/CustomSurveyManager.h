@@ -7,6 +7,17 @@
  *
  ****************************************************************************/
 
+/*
+ * Custom survey manager.
+ *
+ * Owns all plugin-only survey state including:
+ *   - custom survey identification
+ *   - per-survey region counts
+ *   - region generation
+ *   - save/load/export
+ */
+
+
 #pragma once
 
 #include <QtCore/QJsonArray>
@@ -36,7 +47,7 @@ public:
     QString customSurveyName() const { return QStringLiteral("custom"); }
     QString lastError() const { return _lastError; }
 
-    
+
 
     Q_INVOKABLE int regionCountForSurvey(QObject* survey) const;
     Q_INVOKABLE void setRegionCountForSurvey(QObject* survey, int count);
@@ -62,9 +73,7 @@ private:
     };
 
 
-    
     int _regionCountForSurvey(QObject* survey) const;
-
 
     void _setRegionCountForSurvey(QObject* survey, int count);
 
@@ -74,7 +83,6 @@ private:
     void _attachSurvey(QObject* survey);
 
 
-    
     bool _markCustomSurvey(QObject* item, bool setDirty);
     SurveyComplexItem* _surveyItem(QObject* item) const;
     VisualMissionItem* _visualItem(QObject* item) const;
@@ -99,14 +107,14 @@ private:
     bool _writePlanFile(const QJsonDocument& planDocument, const QString& filename);
     void _setLastError(const QString& errorString);
 
-    
+
     QHash<QObject*, int> _regionCountBySurvey;
 
-// Values loaded from JSON before Survey QObject
-// instances have been reconstructed.
+// Pending region counts loaded from JSON before
+// Survey QObject instances have been reconstructed.
 QHash<int, int> _pendingRegionCounts;
 
-    
+
     QSet<QObject*> _customSurveyItems;
     QString _lastError;
 };

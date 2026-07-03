@@ -1,9 +1,29 @@
 /****************************************************************************
  *
- * Rewritten CustomSurveyManager
- * Radial partition implementation (work in progress)
+ * CustomSurveyManager
+ *
+ * Plugin-only implementation of custom survey support.
+ *
+ * Responsibilities:
+ *   - Runtime per-survey region bookkeeping
+ *   - Radial region generation
+ *   - Mission serialization/deserialization
+ *   - Export of individual survey regions
  *
  ****************************************************************************/
+
+/*
+ * Custom survey implementation.
+ *
+ * Runtime:
+ *   QObject* -> regionCount
+ *
+ * Persistence:
+ *   sequenceNumber -> pendingRegionCount
+ *
+ * Implements region generation, serialization,
+ * and export of custom surveys.
+ */
 
 #include "CustomSurveyManager.h"
 
@@ -35,8 +55,6 @@ constexpr const char* kCustomSurveyKey = "customSurvey";
 
 }
 
-
-
 int
 CustomSurveyManager::_regionCountForSurvey(
     QObject* survey) const
@@ -58,12 +76,14 @@ CustomSurveyManager::_setRegionCountForSurvey(
     emit customSurveyChanged(survey);
 }
 
+//=====================================================================
+// Construction
+//=====================================================================
+
 CustomSurveyManager::CustomSurveyManager(QObject* parent)
     : QObject(parent)
 {
 }
-
-
 
 struct ClipEdge {
     QPointF a;
@@ -74,12 +94,6 @@ static inline double cross(const QPointF& a,const QPointF& b)
 {
     return a.x()*b.y()-a.y()*b.x();
 }
-
-
-
-
-
-
 
 static QPointF lineIntersection(
     const QPointF& p1,
@@ -103,7 +117,6 @@ static bool insideEdge(
 {
     return cross(e.b-e.a,p-e.a) >= -1e-9;
 }
-
 
 static QList<QPointF> clipAgainstEdge(
     const QList<QPointF>& poly,
@@ -230,7 +243,6 @@ static double polygonRadius(
     return r * 2.0;
 }
 
-
 static QPointF polygonCentroid(
     const QList<QPointF>& poly)
 {
@@ -271,15 +283,15 @@ static QPointF polygonCentroid(
         cy / (6.0 * area));
 }
 
-
-
 // ---------------------------------------------------------------------
 // Geometry
 // ---------------------------------------------------------------------
 
-
-
 QList<CustomSurveyManager::RegionInfo>
+//=====================================================================
+// Region generation
+//=====================================================================
+
 CustomSurveyManager::_buildRegions(
     QObject* item,
     QString& errorString) const
@@ -390,7 +402,6 @@ CustomSurveyManager::_buildRegions(
     return regions;
 }
 
-
 // ---------------------------------------------------------------------
 // Coordinate conversion helpers
 // ---------------------------------------------------------------------
@@ -446,13 +457,6 @@ CustomSurveyManager::_coordinatesToJson(
 
     return value.toArray();
 }
-
-
-
-
-
-
-
 
 // ---------------------------------------------------------------------
 // Mission JSON helper functions
@@ -521,7 +525,6 @@ CustomSurveyManager::_findMissionObjectBySequence(
     itemIndex = -1;
     return false;
 }
-
 
 // ---------------------------------------------------------------------
 // Utility helpers
@@ -620,8 +623,6 @@ CustomSurveyManager::_setLastError(
     emit lastErrorChanged();
 }
 
-
-
 // ---------------------------------------------------------------------
 // Core manager helpers
 // ---------------------------------------------------------------------
@@ -655,8 +656,6 @@ CustomSurveyManager::_sequenceNumber(QObject* item) const
 
     return -1;
 }
-
-
 
 // =========================================================
 // Per-survey region API
@@ -695,9 +694,11 @@ CustomSurveyManager::setRegionCountForSurvey(
     emit customSurveyChanged(survey);
 }
 
-
-
 void
+//=====================================================================
+// Runtime region bookkeeping
+//=====================================================================
+
 CustomSurveyManager::_attachSurvey(QObject* survey)
 {
     if (!survey)
@@ -725,6 +726,7 @@ CustomSurveyManager::_attachSurvey(QObject* survey)
         [this](QObject* obj)
         {
             _regionCountBySurvey.remove(obj);
+            _customSurveyItems.remove(obj);
         });
 }
 
@@ -788,13 +790,10 @@ CustomSurveyManager::isCustomSurvey(QObject* item) const
     if (!item)
         return false;
 
-    
     return
         _customSurveyItems.contains(
             _surveyItem(item));
 }
-
-
 
 // ---------------------------------------------------------------------
 // Region access (QML)
@@ -803,7 +802,7 @@ CustomSurveyManager::isCustomSurvey(QObject* item) const
 QVariantList
 CustomSurveyManager::regionPolygons(QObject* item)
 {
-    
+
     QString error;
 
     _attachSurvey(item);
@@ -858,15 +857,7 @@ CustomSurveyManager::_metadataForItem(QObject* item) const
     return obj;
 }
 
-
-
-
-
-
-
-
 // =========================================================
-// PATCH 6 TODO
 //
 // Remaining work:
 //
@@ -888,11 +879,6 @@ CustomSurveyManager::_metadataForItem(QObject* item) const
 //      same migration.
 //
 // =========================================================
-
-// PATCH 1 END
-
-
-
 
 // =====================================================================
 
@@ -934,19 +920,10 @@ CustomSurveyManager::_metadataForItem(QObject* item) const
 //
 // [ ] 7. Cleanup
 //       - Remove obsolete rectangle helpers
-//       - Rename remaining quadrant references
+//       - Rename remaining region references
 //       - Final compile/review
 //
 // =====================================================================
-
-
-// ---------------------------------------------------------------------
-// TODO: Restore full implementations.
-// These stubs allow the project to link while the radial implementation
-// is completed.
-// ---------------------------------------------------------------------
-
-
 
 int
 CustomSurveyManager::_surveyOrdinal(QObject* survey) const
@@ -954,24 +931,70 @@ CustomSurveyManager::_surveyOrdinal(QObject* survey) const
     if (!survey)
         return 1;
 
-    QList<QObject*> surveys =
-        _customSurveyItems.values();
+    PlanMasterController* controller =
+        _itemPlanMasterController(survey);
 
-    std::sort(
-        surveys.begin(),
-        surveys.end(),
-        [this](QObject* a, QObject* b)
-        {
-            return _sequenceNumber(a) <
-                   _sequenceNumber(b);
-        });
+    if (!controller)
+        return 1;
 
-    for (int i = 0; i < surveys.size(); ++i) {
-        if (surveys[i] == survey)
-            return i + 1;
+    QmlObjectListModel* visualItems =
+        controller->missionController()->visualItems();
+
+    if (!visualItems)
+        return 1;
+
+    int ordinal = 1;
+
+    for (int i = 0; i < visualItems->count(); ++i) {
+
+        QObject* item = visualItems->get(i);
+
+        if (!isCustomSurvey(item))
+            continue;
+
+        if (item == survey)
+            return ordinal;
+
+        ++ordinal;
     }
 
     return 1;
+}
+
+//=====================================================================
+// Export
+//=====================================================================
+
+
+
+//=====================================================================
+// Export helpers
+//=====================================================================
+
+// Replace the polygon for a single survey inside a copied mission JSON.
+// The live SurveyComplexItem is never modified.
+//
+// TODO:
+//  * Locate survey by sequence number.
+//  * Replace polygon coordinates.
+//  * Force exported regionCount = 1.
+//  * Preserve all remaining mission metadata.
+//
+static bool
+_replaceSurveyPolygonInPlan(
+    QJsonObject& root,
+    int surveySequence,
+    const QJsonArray& polygonCoords)
+{
+    Q_UNUSED(root)
+    Q_UNUSED(surveySequence)
+    Q_UNUSED(polygonCoords)
+
+    // TODO:
+    // Replace the survey polygon directly in the
+    // copied mission JSON.
+
+    return false;
 }
 
 bool
@@ -1022,6 +1045,14 @@ CustomSurveyManager::saveRegionPlans(
     QGCMapPolygon* surveyPolygon =
         surveyItem->surveyAreaPolygon();
 
+    if (!surveyPolygon) {
+        _setLastError(tr("Survey polygon is null."));
+        return false;
+    }
+
+    const bool polygonSignalsBlocked =
+        surveyPolygon->blockSignals(true);
+
     const QList<QGeoCoordinate> originalPolygon =
         surveyPolygon->coordinateList();
 
@@ -1047,7 +1078,12 @@ CustomSurveyManager::saveRegionPlans(
         if (!_applyPolygon(
                 surveyPolygon,
                 region.polygon))
+        {
+            _applyPolygon(
+                surveyPolygon,
+                originalPolygon);
             continue;
+        }
 
         QJsonDocument plan =
             planMasterController->saveToJson();
@@ -1083,10 +1119,6 @@ CustomSurveyManager::saveRegionPlans(
 
                 custom["regionCount"] = 1;
 
-                _setRegionCountForSurvey(
-                    surveyItem,
-                    1);
-
                 // This exported plan now represents only one region.
                 custom["sourceSequence"] = 0;
                 custom["regionIndex"] = savedCount;
@@ -1111,11 +1143,20 @@ CustomSurveyManager::saveRegionPlans(
 
         if (_writePlanFile(plan, filename))
             ++savedCount;
+
+        // Restore immediately so the live survey never
+        // remains in a temporary export state.
+        _applyPolygon(
+            surveyPolygon,
+            originalPolygon);
     }
 
     _applyPolygon(
         surveyPolygon,
         originalPolygon);
+
+    surveyPolygon->blockSignals(
+        polygonSignalsBlocked);
 
     planMasterController->setDirty(wasDirty);
 
@@ -1127,6 +1168,10 @@ CustomSurveyManager::saveRegionPlans(
 }
 
 void
+//=====================================================================
+// Mission serialization
+//=====================================================================
+
 CustomSurveyManager::decorateMissionJson(
     PlanMasterController* planMasterController,
     QJsonObject& missionJson)
@@ -1243,7 +1288,6 @@ CustomSurveyManager::restoreFromPlanJson(
             item,
             false);
 
-        
         int itemIndex = -1;
 
         if (!_findMissionObjectBySequence(
@@ -1256,7 +1300,6 @@ CustomSurveyManager::restoreFromPlanJson(
 
         const QJsonObject mission =
             items[itemIndex].toObject();
-
 
         const QJsonObject custom =
             mission["customSurvey"].toObject();

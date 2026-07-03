@@ -1,3 +1,10 @@
+
+/*
+ * Fly View custom overlay.
+ *
+ * Displays plugin-specific runtime information.
+ */
+
 /****************************************************************************
  *
  * (c) 2009-2019 QGROUNDCONTROL PROJECT <http://www.qgroundcontrol.org>

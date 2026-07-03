@@ -7,6 +7,11 @@
  *
  ****************************************************************************/
 
+/*
+ * Guided action extensions used by the plugin.
+ */
+
+
 // Custom builds can override this file to add custom guided actions.
 
 import QtQml

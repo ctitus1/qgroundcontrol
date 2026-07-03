@@ -1,3 +1,11 @@
+
+/*
+ * Plugin entry point.
+ *
+ * Registers all custom QGroundControl functionality,
+ * QML overrides, and the CustomSurveyManager singleton.
+ */
+
 /****************************************************************************
  *
  * (c) 2009-2019 QGROUNDCONTROL PROJECT <http://www.qgroundcontrol.org>

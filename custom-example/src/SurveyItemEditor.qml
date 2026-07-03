@@ -1,3 +1,10 @@
+
+/*
+ * Mission editor UI for custom surveys.
+ *
+ * Displays and edits per-survey region settings.
+ */
+
 import QtQuick
 import QtQuick.Controls
 import QtQuick.Dialogs

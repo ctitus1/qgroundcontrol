@@ -7,6 +7,11 @@
  *
  ****************************************************************************/
 
+/*
+ * Custom Fly View toolbar actions.
+ */
+
+
 import QtQml.Models
 
 import QGroundControl

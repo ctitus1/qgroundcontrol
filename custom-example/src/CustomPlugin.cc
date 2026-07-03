@@ -1,3 +1,11 @@
+
+/*
+ * Plugin initialization.
+ *
+ * Creates the custom plugin objects, registers QML,
+ * and installs runtime customizations.
+ */
+
 /****************************************************************************
  *
  * (c) 2009-2019 QGROUNDCONTROL PROJECT <http://www.qgroundcontrol.org>

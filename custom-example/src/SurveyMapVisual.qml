@@ -7,6 +7,14 @@
  *
  ****************************************************************************/
 
+/*
+ * Map visualization for custom surveys.
+ *
+ * Draws generated survey regions and keeps the map
+ * synchronized with the current survey.
+ */
+
+
 import QtQuick
 import QtQuick.Controls
 import QtLocation
