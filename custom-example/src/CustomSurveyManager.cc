@@ -35,6 +35,29 @@ constexpr const char* kCustomSurveyKey = "customSurvey";
 
 }
 
+
+
+int
+CustomSurveyManager::_regionCountForSurvey(
+    QObject* survey) const
+{
+    return _regionCountBySurvey.value(survey, 1);
+}
+
+void
+CustomSurveyManager::_setRegionCountForSurvey(
+    QObject* survey,
+    int count)
+{
+    if (!survey)
+        return;
+
+    _regionCountBySurvey[survey] =
+        qMax(1, count);
+
+    emit customSurveyChanged(survey);
+}
+
 CustomSurveyManager::CustomSurveyManager(QObject* parent)
     : QObject(parent)
 {
@@ -278,7 +301,10 @@ CustomSurveyManager::_buildRegions(
         return {};
     }
 
-    if (_regionCount == 1) {
+    const int regionCount =
+        _regionCountForSurvey(item);
+
+    if (regionCount == 1) {
 
         return {{
             tr("Survey"),
@@ -319,9 +345,9 @@ CustomSurveyManager::_buildRegions(
 
     const double step =
         2.0*M_PI /
-        double(_regionCount);
+        double(regionCount);
 
-    for(int i=0;i<_regionCount;i++){
+    for(int i=0;i<regionCount;i++){
 
         double a0 = i*step;
         double a1 = (i+1)*step;
@@ -630,6 +656,78 @@ CustomSurveyManager::_sequenceNumber(QObject* item) const
     return -1;
 }
 
+
+
+// =========================================================
+// Per-survey region API
+// =========================================================
+
+int
+CustomSurveyManager::regionCountForSurvey(QObject* survey) const
+{
+    if (!survey)
+        return 1;
+
+    auto it =
+        _regionCountBySurvey.find(survey);
+
+    if (it != _regionCountBySurvey.end())
+        return it.value();
+
+    return 1;
+}
+
+void
+CustomSurveyManager::setRegionCountForSurvey(
+    QObject* survey,
+    int count)
+{
+    if (!survey)
+        return;
+
+    count = qMax(1,count);
+
+    _attachSurvey(survey);
+
+    _regionCountBySurvey[survey] = count;
+
+    emit regionCountChanged();
+    emit customSurveyChanged(survey);
+}
+
+
+
+void
+CustomSurveyManager::_attachSurvey(QObject* survey)
+{
+    if (!survey)
+        return;
+
+    if (_regionCountBySurvey.contains(survey))
+        return;
+
+    const int seq = _sequenceNumber(survey);
+
+    int count = 1;
+
+    auto it = _pendingRegionCounts.find(seq);
+    if (it != _pendingRegionCounts.end()) {
+        count = it.value();
+        _pendingRegionCounts.erase(it);
+    }
+
+    _regionCountBySurvey.insert(survey, count);
+
+    connect(
+        survey,
+        &QObject::destroyed,
+        this,
+        [this](QObject* obj)
+        {
+            _regionCountBySurvey.remove(obj);
+        });
+}
+
 bool
 CustomSurveyManager::markCustomSurvey(QObject* item)
 {
@@ -662,6 +760,13 @@ CustomSurveyManager::_markCustomSurvey(
                 _customSurveyItems.remove(obj);
             });
 
+        if(_regionCountForSurvey(survey)<1)
+        {
+            _setRegionCountForSurvey(
+                survey,
+                1);
+        }
+
         emit customSurveyChanged(survey);
     }
 
@@ -680,8 +785,11 @@ CustomSurveyManager::_markCustomSurvey(
 bool
 CustomSurveyManager::isCustomSurvey(QObject* item) const
 {
+    if (!item)
+        return false;
+
+    
     return
-        item &&
         _customSurveyItems.contains(
             _surveyItem(item));
 }
@@ -695,7 +803,10 @@ CustomSurveyManager::isCustomSurvey(QObject* item) const
 QVariantList
 CustomSurveyManager::regionPolygons(QObject* item)
 {
+    
     QString error;
+
+    _attachSurvey(item);
 
     QList<RegionInfo> regions =
         _buildRegions(item, error);
@@ -739,7 +850,8 @@ CustomSurveyManager::_metadataForItem(QObject* item) const
     QJsonObject obj;
 
     obj["version"] = 1;
-    obj["regionCount"] = _regionCount;
+    obj["regionCount"] =
+        _regionCountForSurvey(item);
     obj["sourceSequence"] =
         _sequenceNumber(item);
 
@@ -748,11 +860,119 @@ CustomSurveyManager::_metadataForItem(QObject* item) const
 
 
 
+
+
+
+
+
+// =========================================================
+// PATCH 6 TODO
+//
+// Remaining work:
+//
+// SurveyItemEditor.qml
+//
+//      regionCount()
+//          ↓
+//
+//      selected survey
+//          ↓
+//
+//      sequence number
+//          ↓
+//
+//      _regionCountBySurvey
+//
+// SurveyMapVisual.qml
+//
+//      same migration.
+//
+// =========================================================
+
+// PATCH 1 END
+
+
+
+
+// =====================================================================
+
+// =====================================================================
+// REGION IMPLEMENTATION ROADMAP
+//
+// Plugin-only implementation.
+// Do NOT modify QGroundControl core classes.
+//
+// Remaining implementation order:
+//
+// [ ] 1. Per-survey region storage
+//       - Replace global /*removed_global_regionCount*/ usage
+//       - Introduce sequenceNumber -> regionCount map
+//       - Default missing entries to 1
+//
+// [ ] 2. Region accessors
+//       - regionCount(QObject*)
+//       - setRegionCount(QObject*, int)
+//
+// [ ] 3. Serialization
+//       - decorateMissionJson()
+//       - restoreFromPlanJson()
+//       - Persist regionCount with each survey
+//
+// [ ] 4. Export
+//       - saveRegionPlans()
+//       - Exported surveys become regionCount = 1
+//
+// [ ] 5. Geometry
+//       - Finish radial region clipping
+//       - Remove duplicate vertices
+//       - Remove tiny regions
+//       - Ensure CCW winding
+//
+// [ ] 6. UI
+//       - SurveyItemEditor uses selected survey regionCount
+//       - SurveyMapVisual refreshes selected survey only
+//
+// [ ] 7. Cleanup
+//       - Remove obsolete rectangle helpers
+//       - Rename remaining quadrant references
+//       - Final compile/review
+//
+// =====================================================================
+
+
 // ---------------------------------------------------------------------
 // TODO: Restore full implementations.
 // These stubs allow the project to link while the radial implementation
 // is completed.
 // ---------------------------------------------------------------------
+
+
+
+int
+CustomSurveyManager::_surveyOrdinal(QObject* survey) const
+{
+    if (!survey)
+        return 1;
+
+    QList<QObject*> surveys =
+        _customSurveyItems.values();
+
+    std::sort(
+        surveys.begin(),
+        surveys.end(),
+        [this](QObject* a, QObject* b)
+        {
+            return _sequenceNumber(a) <
+                   _sequenceNumber(b);
+        });
+
+    for (int i = 0; i < surveys.size(); ++i) {
+        if (surveys[i] == survey)
+            return i + 1;
+    }
+
+    return 1;
+}
 
 bool
 CustomSurveyManager::saveRegionPlans(
@@ -819,6 +1039,9 @@ CustomSurveyManager::saveRegionPlans(
 
     int savedCount = 0;
 
+    const int surveyIndex =
+        _surveyOrdinal(surveyItem);
+
     for (const RegionInfo& region : regions) {
 
         if (!_applyPolygon(
@@ -829,11 +1052,62 @@ CustomSurveyManager::saveRegionPlans(
         QJsonDocument plan =
             planMasterController->saveToJson();
 
+        //------------------------------------------------------------
+        // Exported regions become independent custom surveys.
+        // Reset their region count to 1 so reopening the plan does
+        // not immediately regenerate additional regions.
+        //------------------------------------------------------------
+
+        QJsonObject root = plan.object();
+
+        if (root.contains("mission")) {
+
+            QJsonObject mission =
+                root["mission"].toObject();
+
+            QJsonArray items =
+                mission["items"].toArray();
+
+            int missionIndex = -1;
+
+            if (_findMissionObjectBySequence(
+                    items,
+                    _sequenceNumber(surveyItem),
+                    missionIndex))
+            {
+                QJsonObject item =
+                    items[missionIndex].toObject();
+
+                QJsonObject custom =
+                    item["customSurvey"].toObject();
+
+                custom["regionCount"] = 1;
+
+                _setRegionCountForSurvey(
+                    surveyItem,
+                    1);
+
+                // This exported plan now represents only one region.
+                custom["sourceSequence"] = 0;
+                custom["regionIndex"] = savedCount;
+
+                item["customSurvey"] = custom;
+
+                items[missionIndex] = item;
+            }
+
+            mission["items"] = items;
+            root["mission"] = mission;
+
+            plan = QJsonDocument(root);
+        }
+
         const QString filename =
             outputDir.absoluteFilePath(
-                QString("%1-%2.plan")
-                    .arg(baseName)
-                    .arg(region.fileSuffix));
+                QString(
+                    "custom-survey_%1-region_%2.plan")
+                    .arg(surveyIndex)
+                    .arg(savedCount + 1));
 
         if (_writePlanFile(plan, filename))
             ++savedCount;
@@ -896,8 +1170,18 @@ CustomSurveyManager::decorateMissionJson(
         if (!custom)
             continue;
 
-        obj[kCustomSurveyKey] =
+        _attachSurvey(custom);
+
+        QJsonObject metadata =
             _metadataForItem(custom);
+
+        metadata["regionCount"] =
+            _regionCountBySurvey.value(
+                custom,
+                1);
+
+        obj[kCustomSurveyKey] =
+            metadata;
 
         items[i] = obj;
     }
@@ -951,8 +1235,35 @@ CustomSurveyManager::restoreFromPlanJson(
 
         QObject* item = visualItems->get(i);
 
-        if (sequences.contains(_sequenceNumber(item)))
-            _markCustomSurvey(item, false);
+        if (!sequences.contains(
+                _sequenceNumber(item)))
+            continue;
+
+        _markCustomSurvey(
+            item,
+            false);
+
+        
+        int itemIndex = -1;
+
+        if (!_findMissionObjectBySequence(
+                items,
+                _sequenceNumber(item),
+                itemIndex))
+        {
+            continue;
+        }
+
+        const QJsonObject mission =
+            items[itemIndex].toObject();
+
+
+        const QJsonObject custom =
+            mission["customSurvey"].toObject();
+
+        _setRegionCountForSurvey(
+            item,
+            custom["regionCount"].toInt(1));
     }
 }
 

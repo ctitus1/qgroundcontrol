@@ -29,7 +29,6 @@ class CustomSurveyManager : public QObject
     Q_OBJECT
     Q_PROPERTY(QString customSurveyName READ customSurveyName CONSTANT)
     Q_PROPERTY(QString lastError READ lastError NOTIFY lastErrorChanged)
-    Q_PROPERTY(int regionCount READ regionCount WRITE setRegionCount NOTIFY regionCountChanged)
 
 public:
     explicit CustomSurveyManager(QObject* parent = nullptr);
@@ -37,17 +36,10 @@ public:
     QString customSurveyName() const { return QStringLiteral("custom"); }
     QString lastError() const { return _lastError; }
 
-    int regionCount() const { return _regionCount; }
-    void setRegionCount(int count) {
-        count = qMax(1, count);
-        if (_regionCount != count) {
-            _regionCount = count;
-            emit regionCountChanged();
-            for (QObject* item : std::as_const(_customSurveyItems)) {
-                emit customSurveyChanged(item);
-            }
-        }
-    }
+    
+
+    Q_INVOKABLE int regionCountForSurvey(QObject* survey) const;
+    Q_INVOKABLE void setRegionCountForSurvey(QObject* survey, int count);
 
     Q_INVOKABLE bool markCustomSurvey(QObject* item);
     Q_INVOKABLE bool isCustomSurvey(QObject* item) const;
@@ -69,6 +61,20 @@ private:
         QList<QGeoCoordinate> polygon;
     };
 
+
+    
+    int _regionCountForSurvey(QObject* survey) const;
+
+
+    void _setRegionCountForSurvey(QObject* survey, int count);
+
+    // Attach a runtime Survey QObject to the per-survey
+    // region bookkeeping. If a pending value was restored
+    // from JSON, transfer it into the runtime map.
+    void _attachSurvey(QObject* survey);
+
+
+    
     bool _markCustomSurvey(QObject* item, bool setDirty);
     SurveyComplexItem* _surveyItem(QObject* item) const;
     VisualMissionItem* _visualItem(QObject* item) const;
@@ -77,6 +83,11 @@ private:
     int _sequenceNumberFromMissionObject(const QJsonObject& itemObject) const;
     bool _isSurveyMissionObject(const QJsonObject& itemObject) const;
     bool _findMissionObjectBySequence(const QJsonArray& items, int sequenceNumber, int& itemIndex) const;
+
+    // Returns the 1-based ordinal of this custom survey
+    // within the current mission.
+    int _surveyOrdinal(QObject* survey) const;
+
     QList<RegionInfo> _buildRegions(QObject* item, QString& errorString) const;
     QList<QPointF> _clipPolygonToRect(const QList<QPointF>& polygon, const QRectF& rect) const;
     QList<QGeoCoordinate> _pointsToCoordinates(const QList<QPointF>& points, const QGeoCoordinate& origin) const;
@@ -88,7 +99,14 @@ private:
     bool _writePlanFile(const QJsonDocument& planDocument, const QString& filename);
     void _setLastError(const QString& errorString);
 
+    
+    QHash<QObject*, int> _regionCountBySurvey;
+
+// Values loaded from JSON before Survey QObject
+// instances have been reconstructed.
+QHash<int, int> _pendingRegionCounts;
+
+    
     QSet<QObject*> _customSurveyItems;
     QString _lastError;
-    int _regionCount = 1;
 };

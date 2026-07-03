@@ -35,6 +35,10 @@ TransectStyleComplexItemEditor {
 
     Component.onCompleted: _refreshCustomQuadrants()
 
+
+        
+
+
     Connections {
         target: missionItem.surveyAreaPolygon
 
@@ -57,8 +61,12 @@ TransectStyleComplexItemEditor {
     Connections {
         target: customSurveyManager
 
-        function onDivisionCountChanged() {
+        function onRegionCountChanged() {
             _refreshCustomQuadrants()
+
+            regionCountSpinBox.value =
+                customSurveyManager.regionCountForSurvey(
+                    missionItem)
         }
     }
 
@@ -167,10 +175,11 @@ Rectangle {
                 }
 
                 SpinBox {
+                    id: regionCountSpinBox
                     from: 1
                     to: 20
-                    value: customSurveyManager.regionCount
-                    onValueChanged: customSurveyManager.regionCount = value
+                    value: customSurveyManager.regionCountForSurvey(missionItem)
+                    onValueChanged: customSurveyManager.setRegionCountForSurvey(missionItem, value)
                 }
             }
 
@@ -245,3 +254,19 @@ Rectangle {
         }
     }
 }
+
+// ============================================================
+// PATCH TODO
+//
+// Migrate UI to QObject*-based runtime identity.
+//
+// regionCountForSurvey(missionItem)
+//
+// should become the single source of truth.
+//
+// After PATCH D:
+//
+// remove any compatibility logic.
+//
+// ============================================================
+

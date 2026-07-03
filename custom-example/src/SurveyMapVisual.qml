@@ -33,6 +33,8 @@ Item {
     signal clicked(int sequenceNumber)
 
     function _refreshRegions() {
+        customSurveyManager.regionCountForSurvey(_missionItem)
+
         _regions = customSurveyManager.isCustomSurvey(_missionItem) ? customSurveyManager.regionPolygons(_missionItem) : []
         _rebuildRegionVisuals()
     }
@@ -115,3 +117,16 @@ Item {
         }
     }
 }
+
+
+// ============================================================
+// PATCH TODO
+//
+// Verify all region rendering comes from
+//
+//      regionPolygons(missionItem)
+//
+// and never from compatibility state.
+//
+// ============================================================
+
