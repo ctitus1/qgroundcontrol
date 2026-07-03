@@ -10,6 +10,7 @@
  */
 
 #include "CustomPlugin.h"
+#include "CustomSurveyManager.h"
 #include "QmlComponentInfo.h"
 #include "QGCLoggingCategory.h"
 #include "QGCPalette.h"
@@ -21,6 +22,7 @@
 #include <QtCore/QApplicationStatic>
 #endif
 #include <QtQml/QQmlApplicationEngine>
+#include <QtQml/QQmlContext>
 #include <QtQml/QQmlFile>
 
 QGC_LOGGING_CATEGORY(CustomLog, "gcs.custom.customplugin")
@@ -77,6 +79,7 @@ bool CustomOptions::wifiReliableForCalibration(void) const
 CustomPlugin::CustomPlugin(QObject *parent)
     : QGCCorePlugin(parent)
     , _options(new CustomOptions(this, this))
+    , _customSurveyManager(new CustomSurveyManager(this))
 {
     _showAdvancedUI = false;
     connect(this, &QGCCorePlugin::showAdvancedUIChanged, this, &CustomPlugin::_advancedChanged);
@@ -364,12 +367,35 @@ QQmlApplicationEngine* CustomPlugin::createQmlApplicationEngine(QObject* parent)
 {
     _qmlEngine = QGCCorePlugin::createQmlApplicationEngine(parent);
     _qmlEngine->addImportPath("qrc:/Custom/Widgets");
+    _qmlEngine->rootContext()->setContextProperty(QStringLiteral("customSurveyManager"), _customSurveyManager);
     // TODO: Investigate _qmlEngine->setExtraSelectors({"custom"})
 
     _selector = new CustomOverrideInterceptor();
     _qmlEngine->addUrlInterceptor(_selector);
 
     return _qmlEngine;
+}
+
+QStringList CustomPlugin::complexMissionItemNames(Vehicle* vehicle, const QStringList& complexMissionItemNames)
+{
+    Q_UNUSED(vehicle);
+
+    QStringList names = complexMissionItemNames;
+    if (!names.contains(_customSurveyManager->customSurveyName())) {
+        names.append(_customSurveyManager->customSurveyName());
+    }
+
+    return names;
+}
+
+void CustomPlugin::postSaveToMissionJson(PlanMasterController* pController, QJsonObject& missionJson)
+{
+    _customSurveyManager->decorateMissionJson(pController, missionJson);
+}
+
+void CustomPlugin::postLoadFromJson(PlanMasterController* pController, QJsonObject& json)
+{
+    _customSurveyManager->restoreFromPlanJson(pController, json);
 }
 
 /*===========================================================================*/

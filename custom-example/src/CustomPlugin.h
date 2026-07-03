@@ -20,6 +20,8 @@
 class CustomOptions;
 class CustomPlugin;
 class CustomSettings;
+class CustomSurveyManager;
+class QJsonObject;
 class QQmlApplicationEngine;
 
 Q_DECLARE_LOGGING_CATEGORY(CustomLog)
@@ -72,6 +74,9 @@ public:
     bool                    adjustSettingMetaData           (const QString& settingsGroup, FactMetaData& metaData) final;
     void                    paletteOverride                 (const QString &colorName, QGCPalette::PaletteColorInfo_t& colorInfo) final;
     QQmlApplicationEngine*  createQmlApplicationEngine      (QObject* parent) final;
+    QStringList             complexMissionItemNames         (Vehicle* vehicle, const QStringList& complexMissionItemNames) final;
+    void                    postSaveToMissionJson           (PlanMasterController* pController, QJsonObject& missionJson) final;
+    void                    postLoadFromJson                (PlanMasterController* pController, QJsonObject& json) final;
 
 private slots:
     void _advancedChanged(bool advanced);
@@ -82,6 +87,7 @@ private:
 private:
     CustomOptions*  _options = nullptr;
     QQmlApplicationEngine *_qmlEngine = nullptr;
+    CustomSurveyManager* _customSurveyManager = nullptr;
     class CustomOverrideInterceptor *_selector = nullptr;
     QVariantList    _customSettingsList; // Not to be mixed up with QGCCorePlugin implementation
 };
