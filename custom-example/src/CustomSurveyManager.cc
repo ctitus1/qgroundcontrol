@@ -582,6 +582,10 @@ CustomSurveyManager::_applyPolygon(
     polygon->appendVertices(coords);
     polygon->endReset();
 
+    // Force any cached geometry (center, bounds, etc.)
+    // to be recomputed by listeners.
+    emit polygon->pathChanged();
+
     return true;
 }
 
