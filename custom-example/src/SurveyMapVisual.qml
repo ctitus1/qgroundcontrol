@@ -28,41 +28,41 @@ Item {
     property var    vehicle
 
     property var    _missionItem: object
-    property var    _quadrants: []
+    property var    _regions: []
 
     signal clicked(int sequenceNumber)
 
-    function _refreshQuadrants() {
-        _quadrants = customSurveyManager.isCustomSurvey(_missionItem) ? customSurveyManager.quadrantPolygons(_missionItem) : []
-        _rebuildQuadrantVisuals()
+    function _refreshRegions() {
+        _regions = customSurveyManager.isCustomSurvey(_missionItem) ? customSurveyManager.regionPolygons(_missionItem) : []
+        _rebuildRegionVisuals()
     }
 
-    function _rebuildQuadrantVisuals() {
-        quadrantObjMgr.destroyObjects()
-        if (!_missionItem || !_missionItem.isCurrentItem || _quadrants.length === 0) {
+    function _rebuildRegionVisuals() {
+        regionObjMgr.destroyObjects()
+        if (!_missionItem || !_missionItem.isCurrentItem || _regions.length === 0) {
             return
         }
 
-        for (var i = 0; i < _quadrants.length; i++) {
-            var quadrant = _quadrants[i]
-            var obj = quadrantVisualComponent.createObject(map, {
-                "quadrantPath": quadrant.polygon,
-                "quadrantIndex": i
+        for (var i = 0; i < _regions.length; i++) {
+            var region = _regions[i]
+            var obj = regionVisualComponent.createObject(map, {
+                "regionPath": region.polygon,
+                "regionIndex": i
             })
             if (obj) {
-                quadrantObjMgr.addObject(obj, map)
+                regionObjMgr.addObject(obj, map)
             }
         }
     }
 
-    Component.onCompleted: _refreshQuadrants()
-    Component.onDestruction: quadrantObjMgr.destroyObjects()
+    Component.onCompleted: _refreshRegions()
+    Component.onDestruction: regionObjMgr.destroyObjects()
 
     Connections {
         target: _missionItem.surveyAreaPolygon
 
         function onPathChanged() {
-            _refreshQuadrants()
+            _refreshRegions()
         }
     }
 
@@ -70,7 +70,7 @@ Item {
         target: _missionItem
 
         function onIsCurrentItemChanged() {
-            _rebuildQuadrantVisuals()
+            _rebuildRegionVisuals()
         }
     }
 
@@ -79,7 +79,7 @@ Item {
 
         function onCustomSurveyChanged(item) {
             if (item === _missionItem) {
-                _refreshQuadrants()
+                _refreshRegions()
             }
         }
     }
@@ -95,19 +95,19 @@ Item {
     }
 
     QGCDynamicObjectManager {
-        id: quadrantObjMgr
+        id: regionObjMgr
     }
 
     Component {
-        id: quadrantVisualComponent
+        id: regionVisualComponent
 
         MapPolygon {
-            property var quadrantPath: []
-            property int quadrantIndex: 0
+            property var regionPath: []
+            property int regionIndex: 0
 
-            path:           quadrantPath
-            color:          ["#332F80ED", "#3327AE60", "#33F2994A", "#33EB5757"][quadrantIndex % 4]
-            border.color:   ["#2F80ED", "#27AE60", "#F2994A", "#EB5757"][quadrantIndex % 4]
+            path:           regionPath
+            color:          ["#332F80ED", "#3327AE60", "#33F2994A", "#33EB5757"][regionIndex % 4]
+            border.color:   ["#2F80ED", "#27AE60", "#F2994A", "#EB5757"][regionIndex % 4]
             border.width:   2
             opacity:        _root.opacity
             visible:        _missionItem.isCurrentItem && customSurveyManager.isCustomSurvey(_missionItem)

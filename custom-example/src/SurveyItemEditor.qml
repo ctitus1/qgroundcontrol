@@ -30,7 +30,7 @@ TransectStyleComplexItemEditor {
 
     function _refreshCustomQuadrants() {
         _customSurvey = customSurveyManager.isCustomSurvey(missionItem)
-        _customQuadrants = _customSurvey ? customSurveyManager.quadrantPolygons(missionItem) : []
+        _customQuadrants = _customSurvey ? customSurveyManager.regionPolygons(missionItem) : []
     }
 
     Component.onCompleted: _refreshCustomQuadrants()
@@ -226,7 +226,7 @@ Rectangle {
         selectFolder:   true
 
         onAcceptedForLoad: (folder) => {
-            customSurveyManager.saveQuadrantPlans(missionItem.masterController, missionItem, folder)
+            customSurveyManager.saveRegionPlans(missionItem.masterController, missionItem, folder)
             mainWindow.showMessageDialog(qsTr("Custom Quadrants"), customSurveyManager.lastError)
             _refreshCustomQuadrants()
             close()

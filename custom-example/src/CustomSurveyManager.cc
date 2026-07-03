@@ -1,9 +1,7 @@
 /****************************************************************************
  *
- * (c) 2009-2024 QGROUNDCONTROL PROJECT <http://www.qgroundcontrol.org>
- *
- * QGroundControl is licensed according to the terms in the file
- * COPYING.md in the root of the source code directory.
+ * Rewritten CustomSurveyManager
+ * Radial partition implementation (work in progress)
  *
  ****************************************************************************/
 
@@ -21,74 +19,20 @@
 #include <QtCore/QDir>
 #include <QtCore/QFile>
 #include <QtCore/QFileInfo>
-#include <QtCore/QHash>
-#include <QtCore/QIODevice>
 #include <QtCore/QJsonArray>
 #include <QtCore/QJsonDocument>
-#include <QtCore/QRegularExpression>
 
-#include <algorithm>
 #include <cmath>
-#include <limits>
-#include <utility>
 
 namespace {
+
 constexpr const char* kItemsKey = "items";
 constexpr const char* kTypeKey = "type";
 constexpr const char* kTypeComplexItemValue = "ComplexItem";
 constexpr const char* kComplexItemTypeKey = "complexItemType";
 constexpr const char* kSurveyComplexItemTypeValue = "survey";
-constexpr const char* kTransectStyleKey = "TransectStyleComplexItem";
-constexpr const char* kTransectItemsKey = "Items";
-constexpr const char* kDoJumpIdKey = "doJumpId";
 constexpr const char* kCustomSurveyKey = "customSurvey";
-constexpr const char* kCustomSurveyTypeKey = "surveyType";
-constexpr const char* kCustomSurveyTypeValue = "custom";
-constexpr const char* kCustomSurveyVersionKey = "version";
-constexpr const char* kSourceSequenceKey = "sourceSequence";
-constexpr const char* kQuadrantsKey = "quadrants";
-constexpr const char* kQuadrantNameKey = "name";
-constexpr const char* kQuadrantPolygonKey = "polygon";
-constexpr const char* kQuadrantAreaKey = "area";
-constexpr const char* kExportedQuadrantKey = "exportedQuadrant";
-constexpr double kPointEpsilonMeters = 0.05;
-constexpr int kDivisionCount = 3;    // Change this to 2,3,4,...
 
-bool pointsClose(const QPointF& a, const QPointF& b)
-{
-    return std::hypot(a.x() - b.x(), a.y() - b.y()) < kPointEpsilonMeters;
-}
-
-void appendUnique(QList<QPointF>& points, const QPointF& point)
-{
-    if (points.isEmpty() || !pointsClose(points.last(), point)) {
-        points.append(point);
-    }
-}
-
-void closeAndClean(QList<QPointF>& points)
-{
-    if (points.count() > 1 && pointsClose(points.first(), points.last())) {
-        points.removeLast();
-    }
-
-    for (int i = points.count() - 1; i > 0; --i) {
-        if (pointsClose(points[i], points[i - 1])) {
-            points.removeAt(i);
-        }
-    }
-}
-
-QString sanitizedBaseName(QString baseName)
-{
-    baseName = baseName.trimmed();
-    if (baseName.isEmpty()) {
-        baseName = QStringLiteral("custom-survey");
-    }
-    baseName.replace(QRegularExpression(QStringLiteral("[^A-Za-z0-9._-]+")), QStringLiteral("-"));
-    baseName.replace(QRegularExpression(QStringLiteral("-+")), QStringLiteral("-"));
-    return baseName;
-}
 }
 
 CustomSurveyManager::CustomSurveyManager(QObject* parent)
@@ -96,546 +40,919 @@ CustomSurveyManager::CustomSurveyManager(QObject* parent)
 {
 }
 
-bool CustomSurveyManager::markCustomSurvey(QObject* item)
+
+
+struct ClipEdge {
+    QPointF a;
+    QPointF b;
+};
+
+static inline double cross(const QPointF& a,const QPointF& b)
 {
-    return _markCustomSurvey(item, true /* setDirty */);
+    return a.x()*b.y()-a.y()*b.x();
 }
 
-bool CustomSurveyManager::_markCustomSurvey(QObject* item, bool setDirty)
+
+
+
+
+
+
+static QPointF lineIntersection(
+    const QPointF& p1,
+    const QPointF& p2,
+    const QPointF& q1,
+    const QPointF& q2)
 {
-    SurveyComplexItem* surveyItem = _surveyItem(item);
-    if (!surveyItem) {
-        _setLastError(tr("Custom surveys can only be created from Survey items."));
-        return false;
-    }
+    QPointF r = p2-p1;
+    QPointF s = q2-q1;
 
-    if (!_customSurveyItems.contains(surveyItem)) {
-        _customSurveyItems.insert(surveyItem);
-        connect(surveyItem, &QObject::destroyed, this, [this](QObject* destroyedItem) {
-            _customSurveyItems.remove(destroyedItem);
-        });
-        emit customSurveyChanged(surveyItem);
-    }
+    double t =
+        cross(q1-p1,s) /
+        cross(r,s);
 
-    if (setDirty) {
-        if (PlanMasterController* masterController = _itemPlanMasterController(surveyItem)) {
-            masterController->setDirty(true);
-        }
-    }
-
-    _setLastError(QString());
-    return true;
+    return p1 + t*r;
 }
 
-bool CustomSurveyManager::isCustomSurvey(QObject* item) const
+static bool insideEdge(
+    const QPointF& p,
+    const ClipEdge& e)
 {
-    return item && _customSurveyItems.contains(_surveyItem(item));
+    return cross(e.b-e.a,p-e.a) >= -1e-9;
 }
 
-QVariantList CustomSurveyManager::quadrantPolygons(QObject* item)
+
+static QList<QPointF> clipAgainstEdge(
+    const QList<QPointF>& poly,
+    const ClipEdge& edge)
 {
-    QString errorString;
-    const QList<QuadrantInfo> quadrants = _buildQuadrants(item, errorString);
-    if (!errorString.isEmpty()) {
-        _setLastError(errorString);
-    } else {
-        _setLastError(QString());
-    }
+    QList<QPointF> out;
 
-    QVariantList quadrantList;
-    for (const QuadrantInfo& quadrant: quadrants) {
-        QVariantMap quadrantMap;
-        quadrantMap[QStringLiteral("name")] = quadrant.name;
-        quadrantMap[QStringLiteral("fileSuffix")] = quadrant.fileSuffix;
-        quadrantMap[QStringLiteral("vertexCount")] = quadrant.polygon.count();
-        quadrantMap[QStringLiteral("area")] = _polygonArea(quadrant.polygon);
-        quadrantMap[QStringLiteral("polygon")] = _coordinatesToVariantList(quadrant.polygon);
-        quadrantList.append(quadrantMap);
-    }
+    if (poly.isEmpty())
+        return out;
 
-    return quadrantList;
-}
+    QPointF S = poly.last();
 
-bool CustomSurveyManager::saveQuadrantPlans(QObject* planMasterControllerObject, QObject* item, const QString& folder)
-{
-    PlanMasterController* planMasterController = qobject_cast<PlanMasterController*>(planMasterControllerObject);
-    SurveyComplexItem* surveyItem = _surveyItem(item);
-    if (!planMasterController || !surveyItem) {
-        _setLastError(tr("Unable to save quadrant plans: missing plan or survey."));
-        return false;
-    }
-    if (!isCustomSurvey(surveyItem)) {
-        _setLastError(tr("Only custom surveys can be saved as quadrant plans."));
-        return false;
-    }
+    for (const QPointF& E : poly) {
 
-    QDir outputDir(folder);
-    if (!outputDir.exists()) {
-        _setLastError(tr("Output folder does not exist: %1").arg(folder));
-        return false;
-    }
+        bool Sin = insideEdge(S, edge);
+        bool Ein = insideEdge(E, edge);
 
-    QString errorString;
-    const QList<QuadrantInfo> quadrants = _buildQuadrants(surveyItem, errorString);
-    if (!errorString.isEmpty()) {
-        _setLastError(errorString);
-        return false;
-    }
-    if (quadrants.isEmpty()) {
-        _setLastError(tr("No non-empty quadrants were generated."));
-        return false;
-    }
+        if (Ein) {
+            if (!Sin)
+                out.append(lineIntersection(S,E,edge.a,edge.b));
 
-    QGCMapPolygon* surveyPolygon = surveyItem->surveyAreaPolygon();
-    const QList<QGeoCoordinate> originalPolygon = surveyPolygon->coordinateList();
-    const bool wasDirty = planMasterController->dirty();
-    const QString currentPlan = planMasterController->currentPlanFile();
-    const QString baseName = sanitizedBaseName(currentPlan.isEmpty() ? QStringLiteral("custom-survey") : QFileInfo(currentPlan).completeBaseName());
+            out.append(E);
 
-    int savedCount = 0;
-    for (const QuadrantInfo& quadrant: quadrants) {
-        if (!_applyPolygon(surveyPolygon, quadrant.polygon)) {
-            continue;
+        } else if (Sin) {
+
+            out.append(lineIntersection(S,E,edge.a,edge.b));
         }
 
-        QJsonDocument quadrantPlan = planMasterController->saveToJson();
-        QJsonObject quadrantRoot = quadrantPlan.object();
-        QJsonObject missionObject = quadrantRoot[PlanMasterController::kJsonMissionObjectKey].toObject();
-        QJsonArray items = missionObject[kItemsKey].toArray();
-        int itemIndex = -1;
-        if (_findMissionObjectBySequence(items, _sequenceNumber(surveyItem), itemIndex)) {
-            QJsonObject itemObject = items[itemIndex].toObject();
-            QJsonObject customObject = itemObject[kCustomSurveyKey].toObject();
-            customObject[kExportedQuadrantKey] = quadrant.name;
-            itemObject[kCustomSurveyKey] = customObject;
-            items[itemIndex] = itemObject;
-            missionObject[kItemsKey] = items;
-            quadrantRoot[PlanMasterController::kJsonMissionObjectKey] = missionObject;
-            quadrantPlan = QJsonDocument(quadrantRoot);
-        }
-
-        const QString filename = outputDir.absoluteFilePath(QStringLiteral("%1-%2.plan").arg(baseName, quadrant.fileSuffix));
-        if (!_writePlanFile(quadrantPlan, filename)) {
-            _applyPolygon(surveyPolygon, originalPolygon);
-            planMasterController->setDirty(wasDirty);
-            return false;
-        }
-        ++savedCount;
+        S = E;
     }
 
-    _applyPolygon(surveyPolygon, originalPolygon);
-    planMasterController->setDirty(wasDirty);
-
-    _setLastError(tr("Saved %1 quadrant plan(s).").arg(savedCount));
-    return savedCount > 0;
+    return out;
 }
 
-void CustomSurveyManager::decorateMissionJson(PlanMasterController* planMasterController, QJsonObject& missionJson)
+static double signedArea(const QList<QPointF>& poly)
 {
-    if (!planMasterController || _customSurveyItems.isEmpty()) {
-        return;
+    double area = 0.0;
+
+    for (int i=0; i<poly.size(); ++i) {
+
+        const QPointF& a = poly[i];
+        const QPointF& b = poly[(i+1)%poly.size()];
+
+        area += a.x()*b.y() - b.x()*a.y();
     }
 
-    QHash<int, QObject*> customItemsBySequence;
-    for (QObject* item: std::as_const(_customSurveyItems)) {
-        if (!item) {
-            continue;
-        }
-        if (_itemPlanMasterController(item) == planMasterController) {
-            const int sequenceNumber = _sequenceNumber(item);
-            if (sequenceNumber >= 0) {
-                customItemsBySequence[sequenceNumber] = item;
-            }
-        }
-    }
-    if (customItemsBySequence.isEmpty()) {
-        return;
-    }
-
-    QJsonArray missionItems = missionJson[kItemsKey].toArray();
-    for (int i = 0; i < missionItems.count(); ++i) {
-        QJsonObject itemObject = missionItems[i].toObject();
-        if (!_isSurveyMissionObject(itemObject)) {
-            continue;
-        }
-
-        QObject* customItem = customItemsBySequence.value(_sequenceNumberFromMissionObject(itemObject), nullptr);
-        if (customItem) {
-            itemObject[kCustomSurveyKey] = _metadataForItem(customItem);
-            missionItems[i] = itemObject;
-        }
-    }
-    missionJson[kItemsKey] = missionItems;
+    return area * 0.5;
 }
 
-void CustomSurveyManager::restoreFromPlanJson(PlanMasterController* planMasterController, const QJsonObject& planJson)
+static void ensureCCW(QList<QPointF>& poly)
 {
-    if (!planMasterController) {
-        return;
-    }
-
-    const QJsonObject missionObject = planJson[PlanMasterController::kJsonMissionObjectKey].toObject();
-    const QJsonArray missionItems = missionObject[kItemsKey].toArray();
-    QSet<int> customSequences;
-    for (const QJsonValue& missionItemValue: missionItems) {
-        const QJsonObject itemObject = missionItemValue.toObject();
-        const QJsonObject customObject = itemObject[kCustomSurveyKey].toObject();
-        if (customObject[kCustomSurveyTypeKey].toString() == QLatin1StringView(kCustomSurveyTypeValue)) {
-            const int sequenceNumber = _sequenceNumberFromMissionObject(itemObject);
-            if (sequenceNumber >= 0) {
-                customSequences.insert(sequenceNumber);
-            }
-        }
-    }
-
-    if (customSequences.isEmpty()) {
-        return;
-    }
-
-    QmlObjectListModel* visualItems = planMasterController->missionController()->visualItems();
-    for (int i = 0; i < visualItems->count(); ++i) {
-        QObject* visualItem = visualItems->get(i);
-        if (customSequences.contains(_sequenceNumber(visualItem))) {
-            _markCustomSurvey(visualItem, false /* setDirty */);
-        }
-    }
+    if (signedArea(poly) < 0.0)
+        std::reverse(poly.begin(), poly.end());
 }
 
-SurveyComplexItem* CustomSurveyManager::_surveyItem(QObject* item) const
+static QList<QPointF> clipAgainstConvexPolygon(
+    QList<QPointF> poly,
+    const QList<QPointF>& clip)
 {
-    return qobject_cast<SurveyComplexItem*>(item);
-}
+    for (int i=0; i<clip.size(); ++i) {
 
-VisualMissionItem* CustomSurveyManager::_visualItem(QObject* item) const
-{
-    return qobject_cast<VisualMissionItem*>(item);
-}
+        ClipEdge edge{
+            clip[i],
+            clip[(i+1)%clip.size()]
+        };
 
-PlanMasterController* CustomSurveyManager::_itemPlanMasterController(QObject* item) const
-{
-    if (VisualMissionItem* visualItem = _visualItem(item)) {
-        return visualItem->masterController();
-    }
-    return nullptr;
-}
+        poly = clipAgainstEdge(poly, edge);
 
-int CustomSurveyManager::_sequenceNumber(QObject* item) const
-{
-    if (VisualMissionItem* visualItem = _visualItem(item)) {
-        return visualItem->sequenceNumber();
-    }
-    return -1;
-}
-
-int CustomSurveyManager::_sequenceNumberFromMissionObject(const QJsonObject& itemObject) const
-{
-    if (itemObject.contains(kDoJumpIdKey)) {
-        return itemObject[kDoJumpIdKey].toInt(-1);
+        if (poly.isEmpty())
+            break;
     }
 
-    const QJsonObject transectObject = itemObject[kTransectStyleKey].toObject();
-    const QJsonArray transectItems = transectObject[kTransectItemsKey].toArray();
-    if (!transectItems.isEmpty()) {
-        return transectItems.first().toObject()[kDoJumpIdKey].toInt(-1);
+    return poly;
+}
+
+static QList<QPointF> makeSectorPolygon(
+    const QPointF& center,
+    double startAngle,
+    double endAngle,
+    double radius)
+{
+    QList<QPointF> poly;
+
+    const double R = radius * 8.0;
+
+    QPointF d0(
+        std::cos(startAngle),
+        std::sin(startAngle));
+
+    QPointF d1(
+        std::cos(endAngle),
+        std::sin(endAngle));
+
+    QPointF mid =
+        QPointF(
+            std::cos((startAngle+endAngle)*0.5),
+            std::sin((startAngle+endAngle)*0.5));
+
+    poly
+        << center
+        << center + R*d0
+        << center + R*mid
+        << center + R*d1;
+
+    ensureCCW(poly);
+
+    return poly;
+}
+
+static double polygonRadius(
+    const QList<QPointF>& poly,
+    const QPointF& center)
+{
+    double r = 0.0;
+
+    for (const QPointF& p : poly) {
+        r = std::max(
+            r,
+            std::hypot(
+                p.x()-center.x(),
+                p.y()-center.y()));
     }
 
-    return -1;
+    return r * 2.0;
 }
 
-bool CustomSurveyManager::_isSurveyMissionObject(const QJsonObject& itemObject) const
-{
-    return itemObject[kTypeKey].toString() == QLatin1StringView(kTypeComplexItemValue) &&
-       itemObject[kComplexItemTypeKey].toString() == QLatin1StringView(kSurveyComplexItemTypeValue);
-}
 
-bool CustomSurveyManager::_findMissionObjectBySequence(const QJsonArray& items, int sequenceNumber, int& itemIndex) const
+static QPointF polygonCentroid(
+    const QList<QPointF>& poly)
 {
-    for (int i = 0; i < items.count(); ++i) {
-        const QJsonObject itemObject = items[i].toObject();
-        if (_isSurveyMissionObject(itemObject) && _sequenceNumberFromMissionObject(itemObject) == sequenceNumber) {
-            itemIndex = i;
-            return true;
-        }
+    if (poly.isEmpty())
+        return QPointF();
+
+    double area = 0.0;
+    double cx = 0.0;
+    double cy = 0.0;
+
+    for (int i = 0; i < poly.size(); ++i) {
+
+        const QPointF& p0 = poly[i];
+        const QPointF& p1 = poly[(i + 1) % poly.size()];
+
+        const double a =
+            p0.x() * p1.y() -
+            p1.x() * p0.y();
+
+        area += a;
+        cx += (p0.x() + p1.x()) * a;
+        cy += (p0.y() + p1.y()) * a;
     }
-    return false;
+
+    area *= 0.5;
+
+    if (std::abs(area) < 1e-9) {
+        QPointF avg;
+
+        for (const QPointF& p : poly)
+            avg += p;
+
+        return avg / double(poly.size());
+    }
+
+    return QPointF(
+        cx / (6.0 * area),
+        cy / (6.0 * area));
 }
 
-QList<CustomSurveyManager::QuadrantInfo> CustomSurveyManager::_buildQuadrants(QObject* item, QString& errorString) const
+
+
+// ---------------------------------------------------------------------
+// Geometry
+// ---------------------------------------------------------------------
+
+
+
+QList<CustomSurveyManager::RegionInfo>
+CustomSurveyManager::_buildRegions(
+    QObject* item,
+    QString& errorString) const
 {
     errorString.clear();
 
     SurveyComplexItem* surveyItem = _surveyItem(item);
+
     if (!surveyItem) {
-        errorString = tr("Custom survey quadrants require a Survey item.");
+        errorString = tr("Invalid survey.");
         return {};
     }
 
-    const QList<QGeoCoordinate> polygon = surveyItem->surveyAreaPolygon()->coordinateList();
-    if (polygon.count() < 3) {
-        errorString = tr("Create a valid survey polygon before generating quadrants.");
+    QList<QGeoCoordinate> geo =
+        surveyItem->surveyAreaPolygon()->coordinateList();
+
+    if (geo.size() < 3) {
+        errorString = tr("Survey polygon invalid.");
         return {};
     }
 
-    const QGeoCoordinate origin = polygon.first();
-    QList<QPointF> localPolygon;
-    localPolygon.reserve(polygon.count());
-    for (const QGeoCoordinate& coordinate: polygon) {
-        double north = 0.0;
-        double east = 0.0;
-        double down = 0.0;
-        QGCGeo::convertGeoToNed(coordinate, origin, north, east, down);
-        localPolygon.append(QPointF(east, north));
-    }
+    if (_regionCount == 1) {
 
-    qreal minX = std::numeric_limits<qreal>::max();
-    qreal maxX = std::numeric_limits<qreal>::lowest();
-    qreal minY = std::numeric_limits<qreal>::max();
-    qreal maxY = std::numeric_limits<qreal>::lowest();
-    for (const QPointF& point: localPolygon) {
-        minX = std::min(minX, point.x());
-        maxX = std::max(maxX, point.x());
-        minY = std::min(minY, point.y());
-        maxY = std::max(maxY, point.y());
-    }
-
-    if (maxX - minX < kPointEpsilonMeters || maxY - minY < kPointEpsilonMeters) {
-        errorString = tr("Survey polygon is too small to split into quadrants.");
-        return {};
-    }
-
-    
-    const int regions = qMax(1, _regionCount);
-
-    if (regions == 1) {
-        return { QuadrantInfo{
+        return {{
             tr("Survey"),
             QStringLiteral("survey"),
-            surveyItem->surveyAreaPolygon()->coordinateList()
-        } };
+            geo
+        }};
     }
-    const qreal cellWidth  = (maxX - minX) / regions;
-    const qreal cellHeight = (maxY - minY) / regions;
 
-    QList<QuadrantInfo> quadrants;
+    //------------------------------------------------------------------
+    // Convert to local coordinates
+    //------------------------------------------------------------------
 
-    for (int row = 0; row < regions; ++row) {
-        for (int col = 0; col < regions; ++col) {
+    const QGeoCoordinate origin = geo.first();
 
-            QRectF rect(
-                QPointF(minX + col * cellWidth,
-                        minY + row * cellHeight),
-                QSizeF(cellWidth, cellHeight));
+    QList<QPointF> local;
 
-            QList<QPointF> clipped = _clipPolygonToRect(localPolygon, rect);
+    for (const auto& c : geo) {
 
-            closeAndClean(clipped);
+        double n,e,d;
 
-            if (clipped.count() >= 3) {
-                QuadrantInfo q;
-                q.name = QString("Cell %1,%2").arg(row + 1).arg(col + 1);
-                q.fileSuffix = QString("r%1c%2").arg(row + 1).arg(col + 1);
-                q.polygon = _pointsToCoordinates(clipped, origin);
-                quadrants.append(q);
-            }
+        QGCGeo::convertGeoToNed(
+            c,
+            origin,
+            n,e,d);
+
+        local.append(QPointF(e,n));
+    }
+
+    QPointF center =
+        polygonCentroid(local);
+
+    double radius =
+        polygonRadius(
+            local,
+            center);
+
+    QList<RegionInfo> regions;
+
+    const double step =
+        2.0*M_PI /
+        double(_regionCount);
+
+    for(int i=0;i<_regionCount;i++){
+
+        double a0 = i*step;
+        double a1 = (i+1)*step;
+
+        QList<QPointF> wedge =
+            makeSectorPolygon(
+                center,
+                a0,
+                a1,
+                radius);
+
+        ensureCCW(wedge);
+
+        QList<QPointF> clipped =
+            clipAgainstConvexPolygon(
+                local,
+                wedge);
+
+        if(clipped.size()<3)
+            continue;
+
+        RegionInfo q;
+
+        q.name =
+            QString("Region %1")
+            .arg(i+1);
+
+        q.fileSuffix =
+            QString("region_%1")
+            .arg(i+1);
+
+        q.polygon =
+            _pointsToCoordinates(
+                clipped,
+                origin);
+
+        regions.append(q);
+    }
+
+    return regions;
+}
+
+
+// ---------------------------------------------------------------------
+// Coordinate conversion helpers
+// ---------------------------------------------------------------------
+
+QList<QGeoCoordinate>
+CustomSurveyManager::_pointsToCoordinates(
+    const QList<QPointF>& points,
+    const QGeoCoordinate& origin) const
+{
+    QList<QGeoCoordinate> out;
+
+    out.reserve(points.size());
+
+    for (const QPointF& p : points) {
+
+        QGeoCoordinate c;
+
+        QGCGeo::convertNedToGeo(
+            p.y(),
+            p.x(),
+            0.0,
+            origin,
+            c);
+
+        out.append(c);
+    }
+
+    return out;
+}
+
+QVariantList
+CustomSurveyManager::_coordinatesToVariantList(
+    const QList<QGeoCoordinate>& coords) const
+{
+    QVariantList out;
+
+    for (const auto& c : coords)
+        out << QVariant::fromValue(c);
+
+    return out;
+}
+
+QJsonArray
+CustomSurveyManager::_coordinatesToJson(
+    const QList<QGeoCoordinate>& coords) const
+{
+    QJsonValue value;
+
+    JsonHelper::saveGeoCoordinateArray(
+        coords,
+        false,
+        value);
+
+    return value.toArray();
+}
+
+
+
+
+
+
+
+
+// ---------------------------------------------------------------------
+// Mission JSON helper functions
+// ---------------------------------------------------------------------
+
+int
+CustomSurveyManager::_sequenceNumberFromMissionObject(
+    const QJsonObject& itemObject) const
+{
+    static constexpr const char* kDoJumpIdKey = "doJumpId";
+    static constexpr const char* kTransectStyleKey = "TransectStyleComplexItem";
+    static constexpr const char* kTransectItemsKey = "Items";
+
+    if (itemObject.contains(kDoJumpIdKey))
+        return itemObject[kDoJumpIdKey].toInt(-1);
+
+    const QJsonObject transect =
+        itemObject[kTransectStyleKey].toObject();
+
+    const QJsonArray items =
+        transect[kTransectItemsKey].toArray();
+
+    if (!items.isEmpty()) {
+        return items.first()
+            .toObject()[kDoJumpIdKey]
+            .toInt(-1);
+    }
+
+    return -1;
+}
+
+bool
+CustomSurveyManager::_isSurveyMissionObject(
+    const QJsonObject& itemObject) const
+{
+    static constexpr const char* kTypeKey = "type";
+    static constexpr const char* kComplexItemTypeKey = "complexItemType";
+
+    return
+        itemObject[kTypeKey].toString() ==
+            QStringLiteral("ComplexItem") &&
+
+        itemObject[kComplexItemTypeKey].toString() ==
+            QStringLiteral("survey");
+}
+
+bool
+CustomSurveyManager::_findMissionObjectBySequence(
+    const QJsonArray& items,
+    int sequenceNumber,
+    int& itemIndex) const
+{
+    for (int i = 0; i < items.size(); ++i) {
+
+        const QJsonObject obj =
+            items[i].toObject();
+
+        if (_isSurveyMissionObject(obj) &&
+            _sequenceNumberFromMissionObject(obj) == sequenceNumber)
+        {
+            itemIndex = i;
+            return true;
         }
     }
 
-
-    if (quadrants.isEmpty()) {
-        errorString = tr("No non-empty quadrants were generated.");
-    }
-
-    return quadrants;
+    itemIndex = -1;
+    return false;
 }
 
-QList<QPointF> CustomSurveyManager::_clipPolygonToRect(const QList<QPointF>& polygon, const QRectF& rect) const
+
+// ---------------------------------------------------------------------
+// Utility helpers
+// ---------------------------------------------------------------------
+
+double
+CustomSurveyManager::_polygonArea(
+    const QList<QGeoCoordinate>& coords) const
 {
-    enum class Boundary {
-        Left,
-        Right,
-        Bottom,
-        Top,
-    };
-
-    auto inside = [rect](const QPointF& point, Boundary boundary) {
-        switch (boundary) {
-        case Boundary::Left:
-            return point.x() >= rect.left() - kPointEpsilonMeters;
-        case Boundary::Right:
-            return point.x() <= rect.right() + kPointEpsilonMeters;
-        case Boundary::Bottom:
-            return point.y() >= rect.top() - kPointEpsilonMeters;
-        case Boundary::Top:
-            return point.y() <= rect.bottom() + kPointEpsilonMeters;
-        }
-        return false;
-    };
-
-    auto intersection = [rect](const QPointF& start, const QPointF& end, Boundary boundary) {
-        qreal value = 0.0;
-        qreal t = 0.0;
-        switch (boundary) {
-        case Boundary::Left:
-            value = rect.left();
-            t = qFuzzyIsNull(end.x() - start.x()) ? 0.0 : (value - start.x()) / (end.x() - start.x());
-            return QPointF(value, start.y() + t * (end.y() - start.y()));
-        case Boundary::Right:
-            value = rect.right();
-            t = qFuzzyIsNull(end.x() - start.x()) ? 0.0 : (value - start.x()) / (end.x() - start.x());
-            return QPointF(value, start.y() + t * (end.y() - start.y()));
-        case Boundary::Bottom:
-            value = rect.top();
-            t = qFuzzyIsNull(end.y() - start.y()) ? 0.0 : (value - start.y()) / (end.y() - start.y());
-            return QPointF(start.x() + t * (end.x() - start.x()), value);
-        case Boundary::Top:
-            value = rect.bottom();
-            t = qFuzzyIsNull(end.y() - start.y()) ? 0.0 : (value - start.y()) / (end.y() - start.y());
-            return QPointF(start.x() + t * (end.x() - start.x()), value);
-        }
-        return end;
-    };
-
-    auto clipAgainst = [&](const QList<QPointF>& input, Boundary boundary) {
-        QList<QPointF> output;
-        if (input.isEmpty()) {
-            return output;
-        }
-
-        QPointF start = input.last();
-        bool startInside = inside(start, boundary);
-        for (const QPointF& end: input) {
-            const bool endInside = inside(end, boundary);
-            if (endInside) {
-                if (!startInside) {
-                    appendUnique(output, intersection(start, end, boundary));
-                }
-                appendUnique(output, end);
-            } else if (startInside) {
-                appendUnique(output, intersection(start, end, boundary));
-            }
-            start = end;
-            startInside = endInside;
-        }
-        closeAndClean(output);
-        return output;
-    };
-
-    QList<QPointF> output = polygon;
-    output = clipAgainst(output, Boundary::Left);
-    output = clipAgainst(output, Boundary::Right);
-    output = clipAgainst(output, Boundary::Bottom);
-    output = clipAgainst(output, Boundary::Top);
-    return output;
-}
-
-QList<QGeoCoordinate> CustomSurveyManager::_pointsToCoordinates(const QList<QPointF>& points, const QGeoCoordinate& origin) const
-{
-    QList<QGeoCoordinate> coordinates;
-    coordinates.reserve(points.count());
-    for (const QPointF& point: points) {
-        QGeoCoordinate coordinate;
-        QGCGeo::convertNedToGeo(point.y(), point.x(), 0.0, origin, coordinate);
-        coordinates.append(coordinate);
-    }
-    return coordinates;
-}
-
-QVariantList CustomSurveyManager::_coordinatesToVariantList(const QList<QGeoCoordinate>& coordinates) const
-{
-    QVariantList variants;
-    for (const QGeoCoordinate& coordinate: coordinates) {
-        variants.append(QVariant::fromValue(coordinate));
-    }
-    return variants;
-}
-
-QJsonArray CustomSurveyManager::_coordinatesToJson(const QList<QGeoCoordinate>& coordinates) const
-{
-    QJsonValue jsonValue;
-    JsonHelper::saveGeoCoordinateArray(coordinates, false /* writeAltitude */, jsonValue);
-    return jsonValue.toArray();
-}
-
-QJsonObject CustomSurveyManager::_metadataForItem(QObject* item) const
-{
-    QJsonObject customObject;
-    customObject[kCustomSurveyVersionKey] = 1;
-    customObject[kCustomSurveyTypeKey] = QString::fromLatin1(kCustomSurveyTypeValue);
-    customObject[kSourceSequenceKey] = _sequenceNumber(item);
-
-    QString errorString;
-    const QList<QuadrantInfo> quadrants = _buildQuadrants(item, errorString);
-    QJsonArray quadrantArray;
-    for (const QuadrantInfo& quadrant: quadrants) {
-        QJsonObject quadrantObject;
-        quadrantObject[kQuadrantNameKey] = quadrant.name;
-        quadrantObject[kQuadrantPolygonKey] = _coordinatesToJson(quadrant.polygon);
-        quadrantObject[kQuadrantAreaKey] = _polygonArea(quadrant.polygon);
-        quadrantArray.append(quadrantObject);
-    }
-    customObject[kQuadrantsKey] = quadrantArray;
-
-    return customObject;
-}
-
-double CustomSurveyManager::_polygonArea(const QList<QGeoCoordinate>& coordinates) const
-{
-    if (coordinates.count() < 3) {
+    if (coords.size() < 3)
         return 0.0;
-    }
 
-    const QGeoCoordinate origin = coordinates.first();
-    QList<QPointF> points;
-    for (const QGeoCoordinate& coordinate: coordinates) {
-        double north = 0.0;
-        double east = 0.0;
-        double down = 0.0;
-        QGCGeo::convertGeoToNed(coordinate, origin, north, east, down);
-        points.append(QPointF(east, north));
+    const QGeoCoordinate origin = coords.first();
+
+    QList<QPointF> local;
+
+    for (const auto& c : coords) {
+
+        double n,e,d;
+
+        QGCGeo::convertGeoToNed(
+            c,
+            origin,
+            n,e,d);
+
+        local.append(QPointF(e,n));
     }
 
     double area = 0.0;
-    for (int i = 0; i < points.count(); ++i) {
-        const QPointF& point = points[i];
-        const QPointF& nextPoint = points[(i + 1) % points.count()];
-        area += point.x() * nextPoint.y() - nextPoint.x() * point.y();
+
+    for (int i=0;i<local.size();++i) {
+
+        const QPointF& p0 = local[i];
+        const QPointF& p1 =
+            local[(i+1)%local.size()];
+
+        area +=
+            p0.x()*p1.y() -
+            p1.x()*p0.y();
     }
-    return std::abs(area) / 2.0;
+
+    return std::abs(area)*0.5;
 }
 
-bool CustomSurveyManager::_applyPolygon(QGCMapPolygon* mapPolygon, const QList<QGeoCoordinate>& coordinates)
+bool
+CustomSurveyManager::_applyPolygon(
+    QGCMapPolygon* polygon,
+    const QList<QGeoCoordinate>& coords)
 {
-    if (!mapPolygon || coordinates.count() < 3) {
+    if (!polygon || coords.size() < 3)
         return false;
-    }
 
-    mapPolygon->beginReset();
-    mapPolygon->clear();
-    mapPolygon->appendVertices(coordinates);
-    mapPolygon->endReset();
+    polygon->beginReset();
+    polygon->clear();
+    polygon->appendVertices(coords);
+    polygon->endReset();
+
     return true;
 }
 
-bool CustomSurveyManager::_writePlanFile(const QJsonDocument& planDocument, const QString& filename)
+bool
+CustomSurveyManager::_writePlanFile(
+    const QJsonDocument& doc,
+    const QString& filename)
 {
     QFile file(filename);
-    if (!file.open(QIODevice::WriteOnly | QIODevice::Truncate | QIODevice::Text)) {
-        _setLastError(tr("Unable to write %1: %2").arg(filename, file.errorString()));
+
+    if (!file.open(
+            QIODevice::WriteOnly |
+            QIODevice::Truncate |
+            QIODevice::Text)) {
+
+        _setLastError(
+            tr("Unable to write %1")
+            .arg(filename));
+
         return false;
     }
 
-    if (file.write(planDocument.toJson(QJsonDocument::Indented)) < 0) {
-        _setLastError(tr("Unable to write %1: %2").arg(filename, file.errorString()));
+    file.write(
+        doc.toJson(
+            QJsonDocument::Indented));
+
+    return true;
+}
+
+void
+CustomSurveyManager::_setLastError(
+    const QString& err)
+{
+    if (_lastError == err)
+        return;
+
+    _lastError = err;
+
+    emit lastErrorChanged();
+}
+
+
+
+// ---------------------------------------------------------------------
+// Core manager helpers
+// ---------------------------------------------------------------------
+
+SurveyComplexItem*
+CustomSurveyManager::_surveyItem(QObject* item) const
+{
+    return qobject_cast<SurveyComplexItem*>(item);
+}
+
+VisualMissionItem*
+CustomSurveyManager::_visualItem(QObject* item) const
+{
+    return qobject_cast<VisualMissionItem*>(item);
+}
+
+PlanMasterController*
+CustomSurveyManager::_itemPlanMasterController(QObject* item) const
+{
+    if (auto* visual = _visualItem(item))
+        return visual->masterController();
+
+    return nullptr;
+}
+
+int
+CustomSurveyManager::_sequenceNumber(QObject* item) const
+{
+    if (auto* visual = _visualItem(item))
+        return visual->sequenceNumber();
+
+    return -1;
+}
+
+bool
+CustomSurveyManager::markCustomSurvey(QObject* item)
+{
+    return _markCustomSurvey(item, true);
+}
+
+bool
+CustomSurveyManager::_markCustomSurvey(
+    QObject* item,
+    bool setDirty)
+{
+    SurveyComplexItem* survey = _surveyItem(item);
+
+    if (!survey) {
+        _setLastError(
+            tr("Only Survey items may become custom surveys."));
         return false;
+    }
+
+    if (!_customSurveyItems.contains(survey)) {
+
+        _customSurveyItems.insert(survey);
+
+        connect(
+            survey,
+            &QObject::destroyed,
+            this,
+            [this](QObject* obj)
+            {
+                _customSurveyItems.remove(obj);
+            });
+
+        emit customSurveyChanged(survey);
+    }
+
+    if (setDirty) {
+
+        if (auto* master =
+                _itemPlanMasterController(survey))
+        {
+            master->setDirty(true);
+        }
     }
 
     return true;
 }
 
-void CustomSurveyManager::_setLastError(const QString& errorString)
+bool
+CustomSurveyManager::isCustomSurvey(QObject* item) const
 {
-    if (_lastError != errorString) {
-        _lastError = errorString;
-        emit lastErrorChanged();
+    return
+        item &&
+        _customSurveyItems.contains(
+            _surveyItem(item));
+}
+
+
+
+// ---------------------------------------------------------------------
+// Region access (QML)
+// ---------------------------------------------------------------------
+
+QVariantList
+CustomSurveyManager::regionPolygons(QObject* item)
+{
+    QString error;
+
+    QList<RegionInfo> regions =
+        _buildRegions(item, error);
+
+    if (!error.isEmpty())
+        _setLastError(error);
+    else
+        _setLastError(QString());
+
+    QVariantList out;
+
+    for (const RegionInfo& region : regions) {
+
+        QVariantMap map;
+
+        map["name"] =
+            region.name;
+
+        map["fileSuffix"] =
+            region.fileSuffix;
+
+        map["vertexCount"] =
+            region.polygon.size();
+
+        map["area"] =
+            _polygonArea(region.polygon);
+
+        map["polygon"] =
+            _coordinatesToVariantList(
+                region.polygon);
+
+        out << map;
+    }
+
+    return out;
+}
+
+QJsonObject
+CustomSurveyManager::_metadataForItem(QObject* item) const
+{
+    QJsonObject obj;
+
+    obj["version"] = 1;
+    obj["regionCount"] = _regionCount;
+    obj["sourceSequence"] =
+        _sequenceNumber(item);
+
+    return obj;
+}
+
+
+
+// ---------------------------------------------------------------------
+// TODO: Restore full implementations.
+// These stubs allow the project to link while the radial implementation
+// is completed.
+// ---------------------------------------------------------------------
+
+bool
+CustomSurveyManager::saveRegionPlans(
+    QObject* planMasterControllerObject,
+    QObject* item,
+    const QString& folder)
+{
+    PlanMasterController* planMasterController =
+        qobject_cast<PlanMasterController*>(planMasterControllerObject);
+
+    SurveyComplexItem* surveyItem =
+        _surveyItem(item);
+
+    if (!planMasterController || !surveyItem) {
+        _setLastError(tr("Unable to save region plans."));
+        return false;
+    }
+
+    if (!isCustomSurvey(surveyItem)) {
+        _setLastError(tr("Only custom surveys may be exported."));
+        return false;
+    }
+
+    QDir outputDir(folder);
+
+    if (!outputDir.exists()) {
+        _setLastError(
+            tr("Output folder does not exist: %1").arg(folder));
+        return false;
+    }
+
+    QString errorString;
+
+    QList<RegionInfo> regions =
+        _buildRegions(surveyItem, errorString);
+
+    if (!errorString.isEmpty()) {
+        _setLastError(errorString);
+        return false;
+    }
+
+    if (regions.isEmpty()) {
+        _setLastError(tr("No regions generated."));
+        return false;
+    }
+
+    QGCMapPolygon* surveyPolygon =
+        surveyItem->surveyAreaPolygon();
+
+    const QList<QGeoCoordinate> originalPolygon =
+        surveyPolygon->coordinateList();
+
+    const bool wasDirty =
+        planMasterController->dirty();
+
+    QString currentPlan =
+        planMasterController->currentPlanFile();
+
+    QString baseName =
+        QFileInfo(
+            currentPlan.isEmpty()
+                ? QStringLiteral("custom-survey.plan")
+                : currentPlan).completeBaseName();
+
+    int savedCount = 0;
+
+    for (const RegionInfo& region : regions) {
+
+        if (!_applyPolygon(
+                surveyPolygon,
+                region.polygon))
+            continue;
+
+        QJsonDocument plan =
+            planMasterController->saveToJson();
+
+        const QString filename =
+            outputDir.absoluteFilePath(
+                QString("%1-%2.plan")
+                    .arg(baseName)
+                    .arg(region.fileSuffix));
+
+        if (_writePlanFile(plan, filename))
+            ++savedCount;
+    }
+
+    _applyPolygon(
+        surveyPolygon,
+        originalPolygon);
+
+    planMasterController->setDirty(wasDirty);
+
+    _setLastError(
+        tr("Saved %1 region plan(s).")
+            .arg(savedCount));
+
+    return savedCount > 0;
+}
+
+void
+CustomSurveyManager::decorateMissionJson(
+    PlanMasterController* planMasterController,
+    QJsonObject& missionJson)
+{
+    if (!planMasterController || _customSurveyItems.isEmpty())
+        return;
+
+    static constexpr const char* kItemsKey = "items";
+    static constexpr const char* kCustomSurveyKey = "customSurvey";
+
+    QHash<int, QObject*> customItems;
+
+    for (QObject* item : std::as_const(_customSurveyItems)) {
+
+        if (!item)
+            continue;
+
+        if (_itemPlanMasterController(item) != planMasterController)
+            continue;
+
+        const int seq = _sequenceNumber(item);
+
+        if (seq >= 0)
+            customItems.insert(seq, item);
+    }
+
+    QJsonArray items = missionJson[kItemsKey].toArray();
+
+    for (int i = 0; i < items.size(); ++i) {
+
+        QJsonObject obj = items[i].toObject();
+
+        if (!_isSurveyMissionObject(obj))
+            continue;
+
+        QObject* custom =
+            customItems.value(
+                _sequenceNumberFromMissionObject(obj),
+                nullptr);
+
+        if (!custom)
+            continue;
+
+        obj[kCustomSurveyKey] =
+            _metadataForItem(custom);
+
+        items[i] = obj;
+    }
+
+    missionJson[kItemsKey] = items;
+}
+
+void
+CustomSurveyManager::restoreFromPlanJson(
+    PlanMasterController* planMasterController,
+    const QJsonObject& planJson)
+{
+    if (!planMasterController)
+        return;
+
+    static constexpr const char* kMissionKey = "mission";
+    static constexpr const char* kItemsKey = "items";
+    static constexpr const char* kCustomSurveyKey = "customSurvey";
+
+    const QJsonObject mission =
+        planJson[kMissionKey].toObject();
+
+    const QJsonArray items =
+        mission[kItemsKey].toArray();
+
+    QSet<int> sequences;
+
+    for (const QJsonValue& value : items) {
+
+        const QJsonObject obj = value.toObject();
+
+        if (!obj.contains(kCustomSurveyKey))
+            continue;
+
+        const int seq =
+            _sequenceNumberFromMissionObject(obj);
+
+        if (seq >= 0)
+            sequences.insert(seq);
+    }
+
+    if (sequences.isEmpty())
+        return;
+
+    QmlObjectListModel* visualItems =
+        planMasterController
+            ->missionController()
+            ->visualItems();
+
+    for (int i = 0; i < visualItems->count(); ++i) {
+
+        QObject* item = visualItems->get(i);
+
+        if (sequences.contains(_sequenceNumber(item)))
+            _markCustomSurvey(item, false);
     }
 }
+

@@ -29,7 +29,7 @@ class CustomSurveyManager : public QObject
     Q_OBJECT
     Q_PROPERTY(QString customSurveyName READ customSurveyName CONSTANT)
     Q_PROPERTY(QString lastError READ lastError NOTIFY lastErrorChanged)
-    Q_PROPERTY(int regionCount READ regionCount WRITE setDivisionCount NOTIFY regionCountChanged)
+    Q_PROPERTY(int regionCount READ regionCount WRITE setRegionCount NOTIFY regionCountChanged)
 
 public:
     explicit CustomSurveyManager(QObject* parent = nullptr);
@@ -38,7 +38,7 @@ public:
     QString lastError() const { return _lastError; }
 
     int regionCount() const { return _regionCount; }
-    void setDivisionCount(int count) {
+    void setRegionCount(int count) {
         count = qMax(1, count);
         if (_regionCount != count) {
             _regionCount = count;
@@ -51,8 +51,8 @@ public:
 
     Q_INVOKABLE bool markCustomSurvey(QObject* item);
     Q_INVOKABLE bool isCustomSurvey(QObject* item) const;
-    Q_INVOKABLE QVariantList quadrantPolygons(QObject* item);
-    Q_INVOKABLE bool saveQuadrantPlans(QObject* planMasterController, QObject* item, const QString& folder);
+    Q_INVOKABLE QVariantList regionPolygons(QObject* item);
+    Q_INVOKABLE bool saveRegionPlans(QObject* planMasterController, QObject* item, const QString& folder);
 
     void decorateMissionJson(PlanMasterController* planMasterController, QJsonObject& missionJson);
     void restoreFromPlanJson(PlanMasterController* planMasterController, const QJsonObject& planJson);
@@ -63,7 +63,7 @@ signals:
     void customSurveyChanged(QObject* item);
 
 private:
-    struct QuadrantInfo {
+    struct RegionInfo {
         QString name;
         QString fileSuffix;
         QList<QGeoCoordinate> polygon;
@@ -77,7 +77,7 @@ private:
     int _sequenceNumberFromMissionObject(const QJsonObject& itemObject) const;
     bool _isSurveyMissionObject(const QJsonObject& itemObject) const;
     bool _findMissionObjectBySequence(const QJsonArray& items, int sequenceNumber, int& itemIndex) const;
-    QList<QuadrantInfo> _buildQuadrants(QObject* item, QString& errorString) const;
+    QList<RegionInfo> _buildRegions(QObject* item, QString& errorString) const;
     QList<QPointF> _clipPolygonToRect(const QList<QPointF>& polygon, const QRectF& rect) const;
     QList<QGeoCoordinate> _pointsToCoordinates(const QList<QPointF>& points, const QGeoCoordinate& origin) const;
     QVariantList _coordinatesToVariantList(const QList<QGeoCoordinate>& coordinates) const;
