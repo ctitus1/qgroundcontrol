@@ -1,16 +1,32 @@
 /****************************************************************************
  *
- * (c) 2009-2024 QGROUNDCONTROL PROJECT <http://www.qgroundcontrol.org>
+ * CustomSurveyManager
  *
- * QGroundControl is licensed according to the terms in the file
- * COPYING.md in the root of the source code directory.
+ * Plugin-only implementation of custom survey support.
+ *
+ * Responsibilities:
+ *   - Runtime per-survey region bookkeeping
+ *   - Radial region generation
+ *   - Mission serialization/deserialization
+ *   - Export of individual survey regions
  *
  ****************************************************************************/
 
+/*
+ * Custom survey implementation.
+ *
+ * Runtime:
+ *   QObject* -> regionCount
+ *
+ * Persistence:
+ *   sequenceNumber -> pendingRegionCount
+ *
+ * Implements region generation, serialization,
+ * and export of custom surveys.
+ */
+
 #include "CustomSurveyManager.h"
 
-#include "CameraCalc.h"
-#include "Fact.h"
 #include "JsonHelper.h"
 #include "MissionController.h"
 #include "PlanMasterController.h"
@@ -25,965 +41,1276 @@
 #include <QtCore/QFileInfo>
 #include <QtCore/QJsonArray>
 #include <QtCore/QJsonDocument>
-#include <QtCore/QPointF>
-#include <QtCore/QStringList>
 
 #include <cmath>
-#include <limits>
+
+namespace {
+
+constexpr const char* kItemsKey = "items";
+constexpr const char* kTypeKey = "type";
+constexpr const char* kTypeComplexItemValue = "ComplexItem";
+constexpr const char* kComplexItemTypeKey = "complexItemType";
+constexpr const char* kSurveyComplexItemTypeValue = "survey";
+constexpr const char* kCustomSurveyKey = "customSurvey";
+
+}
+
+int
+CustomSurveyManager::_regionCountForSurvey(
+    QObject* survey) const
+{
+    return _regionCountBySurvey.value(survey, 1);
+}
+
+void
+CustomSurveyManager::_setRegionCountForSurvey(
+    QObject* survey,
+    int count)
+{
+    if (!survey)
+        return;
+
+    _regionCountBySurvey[survey] =
+        qMax(1, count);
+
+    emit customSurveyChanged(survey);
+}
+
+//=====================================================================
+// Construction
+//=====================================================================
 
 CustomSurveyManager::CustomSurveyManager(QObject* parent)
     : QObject(parent)
 {
 }
 
-//=============================================================================
-// Identity helpers
-//=============================================================================
+struct ClipEdge {
+    QPointF a;
+    QPointF b;
+};
 
-SurveyComplexItem* CustomSurveyManager::_surveyItem(QObject* item) const
+static inline double cross(const QPointF& a,const QPointF& b)
+{
+    return a.x()*b.y()-a.y()*b.x();
+}
+
+static QPointF lineIntersection(
+    const QPointF& p1,
+    const QPointF& p2,
+    const QPointF& q1,
+    const QPointF& q2)
+{
+    QPointF r = p2-p1;
+    QPointF s = q2-q1;
+
+    double t =
+        cross(q1-p1,s) /
+        cross(r,s);
+
+    return p1 + t*r;
+}
+
+static bool insideEdge(
+    const QPointF& p,
+    const ClipEdge& e)
+{
+    return cross(e.b-e.a,p-e.a) >= -1e-9;
+}
+
+static QList<QPointF> clipAgainstEdge(
+    const QList<QPointF>& poly,
+    const ClipEdge& edge)
+{
+    QList<QPointF> out;
+
+    if (poly.isEmpty())
+        return out;
+
+    QPointF S = poly.last();
+
+    for (const QPointF& E : poly) {
+
+        bool Sin = insideEdge(S, edge);
+        bool Ein = insideEdge(E, edge);
+
+        if (Ein) {
+            if (!Sin)
+                out.append(lineIntersection(S,E,edge.a,edge.b));
+
+            out.append(E);
+
+        } else if (Sin) {
+
+            out.append(lineIntersection(S,E,edge.a,edge.b));
+        }
+
+        S = E;
+    }
+
+    return out;
+}
+
+static double signedArea(const QList<QPointF>& poly)
+{
+    double area = 0.0;
+
+    for (int i=0; i<poly.size(); ++i) {
+
+        const QPointF& a = poly[i];
+        const QPointF& b = poly[(i+1)%poly.size()];
+
+        area += a.x()*b.y() - b.x()*a.y();
+    }
+
+    return area * 0.5;
+}
+
+static void ensureCCW(QList<QPointF>& poly)
+{
+    if (signedArea(poly) < 0.0)
+        std::reverse(poly.begin(), poly.end());
+}
+
+static QList<QPointF> clipAgainstConvexPolygon(
+    QList<QPointF> poly,
+    const QList<QPointF>& clip)
+{
+    for (int i=0; i<clip.size(); ++i) {
+
+        ClipEdge edge{
+            clip[i],
+            clip[(i+1)%clip.size()]
+        };
+
+        poly = clipAgainstEdge(poly, edge);
+
+        if (poly.isEmpty())
+            break;
+    }
+
+    return poly;
+}
+
+static QList<QPointF> makeSectorPolygon(
+    const QPointF& center,
+    double startAngle,
+    double endAngle,
+    double radius)
+{
+    QList<QPointF> poly;
+
+    const double R = radius * 8.0;
+
+    QPointF d0(
+        std::cos(startAngle),
+        std::sin(startAngle));
+
+    QPointF d1(
+        std::cos(endAngle),
+        std::sin(endAngle));
+
+    QPointF mid =
+        QPointF(
+            std::cos((startAngle+endAngle)*0.5),
+            std::sin((startAngle+endAngle)*0.5));
+
+    poly
+        << center
+        << center + R*d0
+        << center + R*mid
+        << center + R*d1;
+
+    ensureCCW(poly);
+
+    return poly;
+}
+
+static double polygonRadius(
+    const QList<QPointF>& poly,
+    const QPointF& center)
+{
+    double r = 0.0;
+
+    for (const QPointF& p : poly) {
+        r = std::max(
+            r,
+            std::hypot(
+                p.x()-center.x(),
+                p.y()-center.y()));
+    }
+
+    return r * 2.0;
+}
+
+static QPointF polygonCentroid(
+    const QList<QPointF>& poly)
+{
+    if (poly.isEmpty())
+        return QPointF();
+
+    double area = 0.0;
+    double cx = 0.0;
+    double cy = 0.0;
+
+    for (int i = 0; i < poly.size(); ++i) {
+
+        const QPointF& p0 = poly[i];
+        const QPointF& p1 = poly[(i + 1) % poly.size()];
+
+        const double a =
+            p0.x() * p1.y() -
+            p1.x() * p0.y();
+
+        area += a;
+        cx += (p0.x() + p1.x()) * a;
+        cy += (p0.y() + p1.y()) * a;
+    }
+
+    area *= 0.5;
+
+    if (std::abs(area) < 1e-9) {
+        QPointF avg;
+
+        for (const QPointF& p : poly)
+            avg += p;
+
+        return avg / double(poly.size());
+    }
+
+    return QPointF(
+        cx / (6.0 * area),
+        cy / (6.0 * area));
+}
+
+// ---------------------------------------------------------------------
+// Geometry
+// ---------------------------------------------------------------------
+
+QList<CustomSurveyManager::RegionInfo>
+//=====================================================================
+// Region generation
+//=====================================================================
+
+CustomSurveyManager::_buildRegions(
+    QObject* item,
+    QString& errorString) const
+{
+    errorString.clear();
+
+    SurveyComplexItem* surveyItem = _surveyItem(item);
+
+    if (!surveyItem) {
+        errorString = tr("Invalid survey.");
+        return {};
+    }
+
+    QList<QGeoCoordinate> geo =
+        surveyItem->surveyAreaPolygon()->coordinateList();
+
+    if (geo.size() < 3) {
+        errorString = tr("Survey polygon invalid.");
+        return {};
+    }
+
+    const int regionCount =
+        _regionCountForSurvey(item);
+
+    if (regionCount == 1) {
+
+        return {{
+            tr("Survey"),
+            QStringLiteral("survey"),
+            geo
+        }};
+    }
+
+    //------------------------------------------------------------------
+    // Convert to local coordinates
+    //------------------------------------------------------------------
+
+    const QGeoCoordinate origin = geo.first();
+
+    QList<QPointF> local;
+
+    for (const auto& c : geo) {
+
+        double n,e,d;
+
+        QGCGeo::convertGeoToNed(
+            c,
+            origin,
+            n,e,d);
+
+        local.append(QPointF(e,n));
+    }
+
+    QPointF center =
+        polygonCentroid(local);
+
+    double radius =
+        polygonRadius(
+            local,
+            center);
+
+    QList<RegionInfo> regions;
+
+    const double step =
+        2.0*M_PI /
+        double(regionCount);
+
+    for(int i=0;i<regionCount;i++){
+
+        double a0 = i*step;
+        double a1 = (i+1)*step;
+
+        QList<QPointF> wedge =
+            makeSectorPolygon(
+                center,
+                a0,
+                a1,
+                radius);
+
+        ensureCCW(wedge);
+
+        QList<QPointF> clipped =
+            clipAgainstConvexPolygon(
+                local,
+                wedge);
+
+        if(clipped.size()<3)
+            continue;
+
+        RegionInfo q;
+
+        q.name =
+            QString("Region %1")
+            .arg(i+1);
+
+        q.fileSuffix =
+            QString("region_%1")
+            .arg(i+1);
+
+        q.polygon =
+            _pointsToCoordinates(
+                clipped,
+                origin);
+
+        regions.append(q);
+    }
+
+    return regions;
+}
+
+// ---------------------------------------------------------------------
+// Coordinate conversion helpers
+// ---------------------------------------------------------------------
+
+QList<QGeoCoordinate>
+CustomSurveyManager::_pointsToCoordinates(
+    const QList<QPointF>& points,
+    const QGeoCoordinate& origin) const
+{
+    QList<QGeoCoordinate> out;
+
+    out.reserve(points.size());
+
+    for (const QPointF& p : points) {
+
+        QGeoCoordinate c;
+
+        QGCGeo::convertNedToGeo(
+            p.y(),
+            p.x(),
+            0.0,
+            origin,
+            c);
+
+        out.append(c);
+    }
+
+    return out;
+}
+
+QVariantList
+CustomSurveyManager::_coordinatesToVariantList(
+    const QList<QGeoCoordinate>& coords) const
+{
+    QVariantList out;
+
+    for (const auto& c : coords)
+        out << QVariant::fromValue(c);
+
+    return out;
+}
+
+QJsonArray
+CustomSurveyManager::_coordinatesToJson(
+    const QList<QGeoCoordinate>& coords) const
+{
+    QJsonValue value;
+
+    JsonHelper::saveGeoCoordinateArray(
+        coords,
+        false,
+        value);
+
+    return value.toArray();
+}
+
+// ---------------------------------------------------------------------
+// Mission JSON helper functions
+// ---------------------------------------------------------------------
+
+int
+CustomSurveyManager::_sequenceNumberFromMissionObject(
+    const QJsonObject& itemObject) const
+{
+    static constexpr const char* kDoJumpIdKey = "doJumpId";
+    static constexpr const char* kTransectStyleKey = "TransectStyleComplexItem";
+    static constexpr const char* kTransectItemsKey = "Items";
+
+    if (itemObject.contains(kDoJumpIdKey))
+        return itemObject[kDoJumpIdKey].toInt(-1);
+
+    const QJsonObject transect =
+        itemObject[kTransectStyleKey].toObject();
+
+    const QJsonArray items =
+        transect[kTransectItemsKey].toArray();
+
+    if (!items.isEmpty()) {
+        return items.first()
+            .toObject()[kDoJumpIdKey]
+            .toInt(-1);
+    }
+
+    return -1;
+}
+
+bool
+CustomSurveyManager::_isSurveyMissionObject(
+    const QJsonObject& itemObject) const
+{
+    static constexpr const char* kTypeKey = "type";
+    static constexpr const char* kComplexItemTypeKey = "complexItemType";
+
+    return
+        itemObject[kTypeKey].toString() ==
+            QStringLiteral("ComplexItem") &&
+
+        itemObject[kComplexItemTypeKey].toString() ==
+            QStringLiteral("survey");
+}
+
+bool
+CustomSurveyManager::_findMissionObjectBySequence(
+    const QJsonArray& items,
+    int sequenceNumber,
+    int& itemIndex) const
+{
+    for (int i = 0; i < items.size(); ++i) {
+
+        const QJsonObject obj =
+            items[i].toObject();
+
+        if (_isSurveyMissionObject(obj) &&
+            _sequenceNumberFromMissionObject(obj) == sequenceNumber)
+        {
+            itemIndex = i;
+            return true;
+        }
+    }
+
+    itemIndex = -1;
+    return false;
+}
+
+// ---------------------------------------------------------------------
+// Utility helpers
+// ---------------------------------------------------------------------
+
+double
+CustomSurveyManager::_polygonArea(
+    const QList<QGeoCoordinate>& coords) const
+{
+    if (coords.size() < 3)
+        return 0.0;
+
+    const QGeoCoordinate origin = coords.first();
+
+    QList<QPointF> local;
+
+    for (const auto& c : coords) {
+
+        double n,e,d;
+
+        QGCGeo::convertGeoToNed(
+            c,
+            origin,
+            n,e,d);
+
+        local.append(QPointF(e,n));
+    }
+
+    double area = 0.0;
+
+    for (int i=0;i<local.size();++i) {
+
+        const QPointF& p0 = local[i];
+        const QPointF& p1 =
+            local[(i+1)%local.size()];
+
+        area +=
+            p0.x()*p1.y() -
+            p1.x()*p0.y();
+    }
+
+    return std::abs(area)*0.5;
+}
+
+bool
+CustomSurveyManager::_applyPolygon(
+    QGCMapPolygon* polygon,
+    const QList<QGeoCoordinate>& coords)
+{
+    if (!polygon || coords.size() < 3)
+        return false;
+
+    polygon->beginReset();
+    polygon->clear();
+    polygon->appendVertices(coords);
+    polygon->endReset();
+
+    // Force any cached geometry (center, bounds, etc.)
+    // to be recomputed by listeners.
+    emit polygon->pathChanged();
+
+    return true;
+}
+
+bool
+CustomSurveyManager::_writePlanFile(
+    const QJsonDocument& doc,
+    const QString& filename)
+{
+    QFile file(filename);
+
+    if (!file.open(
+            QIODevice::WriteOnly |
+            QIODevice::Truncate |
+            QIODevice::Text)) {
+
+        _setLastError(
+            tr("Unable to write %1")
+            .arg(filename));
+
+        return false;
+    }
+
+    file.write(
+        doc.toJson(
+            QJsonDocument::Indented));
+
+    return true;
+}
+
+void
+CustomSurveyManager::_setLastError(
+    const QString& err)
+{
+    if (_lastError == err)
+        return;
+
+    _lastError = err;
+
+    emit lastErrorChanged();
+}
+
+// ---------------------------------------------------------------------
+// Core manager helpers
+// ---------------------------------------------------------------------
+
+SurveyComplexItem*
+CustomSurveyManager::_surveyItem(QObject* item) const
 {
     return qobject_cast<SurveyComplexItem*>(item);
 }
 
-VisualMissionItem* CustomSurveyManager::_visualItem(QObject* item) const
+VisualMissionItem*
+CustomSurveyManager::_visualItem(QObject* item) const
 {
     return qobject_cast<VisualMissionItem*>(item);
 }
 
-PlanMasterController* CustomSurveyManager::_itemController(QObject* item) const
+PlanMasterController*
+CustomSurveyManager::_itemPlanMasterController(QObject* item) const
 {
-    if (VisualMissionItem* visual = _visualItem(item)) {
+    if (auto* visual = _visualItem(item))
         return visual->masterController();
-    }
+
     return nullptr;
 }
 
-int CustomSurveyManager::_sequenceNumber(QObject* item) const
+int
+CustomSurveyManager::_sequenceNumber(QObject* item) const
 {
-    if (VisualMissionItem* visual = _visualItem(item)) {
+    if (auto* visual = _visualItem(item))
         return visual->sequenceNumber();
-    }
+
     return -1;
 }
 
-//=============================================================================
-// Ray -> boundary cut
-//=============================================================================
+// =========================================================
+// Per-survey region API
+// =========================================================
 
-QGeoCoordinate CustomSurveyManager::_rayBoundaryIntersection(const QList<QGeoCoordinate>& polygon,
-                                                             const QGeoCoordinate& center,
-                                                             double azimuthDeg)
+int
+CustomSurveyManager::regionCountForSurvey(QObject* survey) const
 {
-    const int n = polygon.size();
-    if (n < 3 || !center.isValid()) {
-        return QGeoCoordinate();
-    }
+    if (!survey)
+        return 1;
 
-    const QGeoCoordinate origin = polygon.first();
-    auto toLocal = [&origin](const QGeoCoordinate& c) {
-        double north, east, down;
-        QGCGeo::convertGeoToNed(c, origin, north, east, down);
-        return QPointF(east, north);
-    };
+    auto it =
+        _regionCountBySurvey.find(survey);
 
-    QList<QPointF> V;
-    V.reserve(n);
-    for (const QGeoCoordinate& c : polygon) {
-        V.append(toLocal(c));
-    }
-    const QPointF C = toLocal(center);
+    if (it != _regionCountBySurvey.end())
+        return it.value();
 
-    // Bearing: 0 = north, clockwise. In (east, north): (sin, cos).
-    const double rad = azimuthDeg * M_PI / 180.0;
-    const QPointF dir(std::sin(rad), std::cos(rad));
-
-    double bestT = std::numeric_limits<double>::max();
-    QPointF bestPoint;
-    bool found = false;
-    for (int j = 0; j < n; ++j) {
-        const QPointF a = V[j];
-        const QPointF ab = V[(j + 1) % n] - a;
-        const double denom = (dir.x() * ab.y()) - (dir.y() * ab.x());   // cross(dir, ab)
-        if (std::abs(denom) < 1e-12) {
-            continue;   // parallel
-        }
-        const QPointF ac = a - C;
-        const double t = ((ac.x() * ab.y()) - (ac.y() * ab.x())) / denom;   // distance along ray
-        const double u = ((ac.x() * dir.y()) - (ac.y() * dir.x())) / denom; // position along edge
-        if (t > 1e-6 && u >= -1e-6 && u <= 1.0 + 1e-6 && t < bestT) {
-            bestT = t;
-            bestPoint = C + (t * dir);
-            found = true;
-        }
-    }
-    if (!found) {
-        return QGeoCoordinate();
-    }
-
-    QGeoCoordinate cut;
-    QGCGeo::convertNedToGeo(bestPoint.y() /*north*/, bestPoint.x() /*east*/, 0.0, origin, cut);
-    return cut;
+    return 1;
 }
 
-//=============================================================================
-// State access
-//=============================================================================
-
-void CustomSurveyManager::_attachSurvey(QObject* survey)
+void
+CustomSurveyManager::setRegionCountForSurvey(
+    QObject* survey,
+    int count)
 {
-    if (!survey || _stateBySurvey.contains(survey)) {
+    if (!survey)
         return;
-    }
 
-    ControlState state;
-    const int seq = _sequenceNumber(survey);
-    if (_pendingState.contains(seq)) {
-        state = _pendingState.take(seq);
-    }
-    _stateBySurvey.insert(survey, state);
+    count = qMax(1,count);
 
-    connect(survey, &QObject::destroyed, this, [this](QObject* obj) {
-        _stateBySurvey.remove(obj);
-        _customSurveyItems.remove(obj);
-        _lastParamSig.remove(obj);
-        _cachedRegions.remove(obj);
-        _cachedRegionSig.remove(obj);
-        const QList<SurveyComplexItem*> shadows = _regionSurveys.take(obj);
-        for (SurveyComplexItem* shadow : shadows) {
-            if (shadow) {
-                shadow->deleteLater();
-            }
-        }
-    });
+    _attachSurvey(survey);
+
+    _regionCountBySurvey[survey] = count;
+
+    emit regionCountChanged();
+    emit customSurveyChanged(survey);
 }
 
-CustomSurveyManager::ControlState& CustomSurveyManager::_stateFor(QObject* item)
+void
+//=====================================================================
+// Runtime region bookkeeping
+//=====================================================================
+
+CustomSurveyManager::_attachSurvey(QObject* survey)
 {
-    _attachSurvey(item);
-    return _stateBySurvey[item];
+    if (!survey)
+        return;
+
+    if (_regionCountBySurvey.contains(survey))
+        return;
+
+    const int seq = _sequenceNumber(survey);
+
+    int count = 1;
+
+    auto it = _pendingRegionCounts.find(seq);
+    if (it != _pendingRegionCounts.end()) {
+        count = it.value();
+        _pendingRegionCounts.erase(it);
+    }
+
+    _regionCountBySurvey.insert(survey, count);
+
+    connect(
+        survey,
+        &QObject::destroyed,
+        this,
+        [this](QObject* obj)
+        {
+            _regionCountBySurvey.remove(obj);
+            _customSurveyItems.remove(obj);
+        });
 }
 
-bool CustomSurveyManager::markCustomSurvey(QObject* item)
+bool
+CustomSurveyManager::markCustomSurvey(QObject* item)
 {
     return _markCustomSurvey(item, true);
 }
 
-bool CustomSurveyManager::_markCustomSurvey(QObject* item, bool setDirty)
+bool
+CustomSurveyManager::_markCustomSurvey(
+    QObject* item,
+    bool setDirty)
 {
     SurveyComplexItem* survey = _surveyItem(item);
+
     if (!survey) {
-        _setLastError(tr("Only Survey items can become custom surveys."));
+        _setLastError(
+            tr("Only Survey items may become custom surveys."));
         return false;
     }
 
     if (!_customSurveyItems.contains(survey)) {
-        _customSurveyItems.insert(survey);
-        _attachSurvey(survey);
 
-        // Follow whole-survey moves/edits by translating the center and control
-        // vertices by the survey polygon's centroid delta. We listen to
-        // pathChanged (not centerChanged): during a center-drag translation
-        // QGCMapPolygon sets _center to the drag target itself, so the recomputed
-        // centroid matches and centerChanged is suppressed — but pathChanged
-        // still fires, so it's the reliable trigger for both moves and reshapes.
-        if (QGCMapPolygon* polygon = survey->surveyAreaPolygon()) {
-            _stateBySurvey[survey].lastPolygonCenter = polygon->center();
-            connect(polygon, &QGCMapPolygon::pathChanged, this, [this, survey, polygon]() {
-                // Core-bug workaround (no source mods): QGCMapPolygon::setCenter
-                // gates its centerChanged emit behind the SAME _deferredPathChanged
-                // flag it already raised for pathChanged, so during a center drag
-                // centerChanged never fires. The core centroid marker binds
-                // `coordinate: mapPolygon.center`, so its binding freezes even
-                // though center() is already up to date. pathChanged DOES fire, so
-                // re-emit centerChanged here to drive the real marker's binding.
-                if (polygon->centerDrag()) {
-                    QMetaObject::invokeMethod(polygon, "centerChanged",
-                                              Q_ARG(QGeoCoordinate, polygon->center()));
-                }
-                _onSurveyPolygonMoved(survey);
+        _customSurveyItems.insert(survey);
+
+        connect(
+            survey,
+            &QObject::destroyed,
+            this,
+            [this](QObject* obj)
+            {
+                _customSurveyItems.remove(obj);
             });
+
+        if(_regionCountForSurvey(survey)<1)
+        {
+            _setRegionCountForSurvey(
+                survey,
+                1);
         }
 
         emit customSurveyChanged(survey);
     }
 
     if (setDirty) {
-        if (PlanMasterController* controller = _itemController(survey)) {
-            controller->setDirty(true);
+
+        if (auto* master =
+                _itemPlanMasterController(survey))
+        {
+            master->setDirty(true);
         }
     }
+
     return true;
 }
 
-bool CustomSurveyManager::isCustomSurvey(QObject* item) const
+bool
+CustomSurveyManager::isCustomSurvey(QObject* item) const
 {
-    return item && _customSurveyItems.contains(_surveyItem(item));
+    if (!item)
+        return false;
+
+    return
+        _customSurveyItems.contains(
+            _surveyItem(item));
 }
 
-void CustomSurveyManager::_onSurveyPolygonMoved(QObject* survey)
+// ---------------------------------------------------------------------
+// Region access (QML)
+// ---------------------------------------------------------------------
+
+QVariantList
+CustomSurveyManager::regionPolygons(QObject* item)
 {
-    if (!_stateBySurvey.contains(survey)) {
-        return;
-    }
-    SurveyComplexItem* surveyItem = _surveyItem(survey);
-    if (!surveyItem) {
-        return;
-    }
-    const QGeoCoordinate newCenter = surveyItem->surveyAreaPolygon()->center();
-    if (!newCenter.isValid()) {
-        return;
-    }
 
-    ControlState& state = _stateBySurvey[survey];
-    const QGeoCoordinate oldCenter = state.lastPolygonCenter;
-    state.lastPolygonCenter = newCenter;
+    QString error;
 
-    if (!oldCenter.isValid()) {
-        return;                 // first observation: nothing to translate against yet
-    }
-    const double distance = oldCenter.distanceTo(newCenter);
-    if (distance < 0.01) {
-        return;                 // negligible movement
-    }
+    _attachSurvey(item);
 
-    // Same rigid geodesic translation QGCMapPolygon applies to its vertices:
-    // move the center AND every control vertex so the whole division rides
-    // along with the survey. (A center-only drag goes through
-    // setCenterControlPoint instead and leaves the vertices stationary.)
-    const double azimuth = oldCenter.azimuthTo(newCenter);
-    if (state.center.isValid()) {
-        state.center = state.center.atDistanceAndAzimuth(distance, azimuth);
-    }
-    for (int i = 0; i < state.edgeVertices.size(); ++i) {
-        if (state.edgeVertices[i].isValid()) {
-            state.edgeVertices[i] = state.edgeVertices[i].atDistanceAndAzimuth(distance, azimuth);
-        }
-    }
+    QList<RegionInfo> regions =
+        _buildRegions(item, error);
 
-    // A whole-survey CENTER drag is a rigid translation: the control points just
-    // shifted by (distance, azimuth), so the regions/transects shift by exactly
-    // the same delta. Tell the visuals to translate the already-built lines
-    // (cheap) rather than recompute. Any other polygon edit (a vertex reshape,
-    // resize, KML load, ...) genuinely changes region shape, so fall back to a
-    // full recompute.
-    if (surveyItem->surveyAreaPolygon()->centerDrag()) {
-        emit customSurveyTranslated(survey, distance, azimuth);
-    } else {
-        emit customSurveyChanged(survey);
-    }
-}
-
-//=============================================================================
-// Control points (rays)
-//=============================================================================
-
-void CustomSurveyManager::_seedControlPoints(QObject* item, ControlState& state, int count)
-{
-    SurveyComplexItem* survey = _surveyItem(item);
-    if (!survey) {
-        return;
-    }
-    if (survey->surveyAreaPolygon()->coordinateList().size() < 3) {
-        return;
-    }
-
-    if (!state.center.isValid()) {
-        state.center = survey->surveyAreaPolygon()->center();
-    }
-    const QGeoCoordinate center = state.center;
-    const QList<QGeoCoordinate> polygon = survey->surveyAreaPolygon()->coordinateList();
-
-    // Place a control vertex at the midpoint of each evenly-spaced ray.
-    state.edgeVertices.clear();
-    for (int i = 0; i < count; ++i) {
-        const double azimuth = (360.0 * i) / static_cast<double>(count);
-        const QGeoCoordinate cut = _rayBoundaryIntersection(polygon, center, azimuth);
-        if (cut.isValid()) {
-            state.edgeVertices.append(center.atDistanceAndAzimuth(center.distanceTo(cut) * 0.5, azimuth));
-        } else {
-            state.edgeVertices.append(center);
-        }
-    }
-    state.regionCount = count;
-    state.seeded = true;
-    state.lastPolygonCenter = survey->surveyAreaPolygon()->center();
-}
-
-int CustomSurveyManager::regionCount(QObject* item)
-{
-    if (!_surveyItem(item)) {
-        return 1;
-    }
-    return _stateFor(item).regionCount;
-}
-
-void CustomSurveyManager::setRegionCount(QObject* item, int count)
-{
-    if (!_surveyItem(item)) {
-        return;
-    }
-    count = qBound(1, count, 64);
-    ControlState& state = _stateFor(item);
-    state.regionCount = count;
-    if (count < 2) {
-        state.edgeVertices.clear();
-        state.seeded = true;   // undivided: nothing to seed
-    } else {
-        _seedControlPoints(item, state, count);
-    }
-    if (PlanMasterController* controller = _itemController(item)) {
-        controller->setDirty(true);
-    }
-    emit customSurveyChanged(item);
-}
-
-QGeoCoordinate CustomSurveyManager::centerControlPoint(QObject* item)
-{
-    SurveyComplexItem* survey = _surveyItem(item);
-    if (!survey) {
-        return QGeoCoordinate();
-    }
-    ControlState& state = _stateFor(item);
-    if (!state.center.isValid()) {
-        state.center = survey->surveyAreaPolygon()->center();
-    }
-    return state.center;
-}
-
-QVariantList CustomSurveyManager::edgeControlPoints(QObject* item)
-{
-    QVariantList out;
-    SurveyComplexItem* survey = _surveyItem(item);
-    if (!survey) {
-        return out;
-    }
-    ControlState& state = _stateFor(item);
-    if (state.regionCount >= 2 && (!state.seeded || state.edgeVertices.size() != state.regionCount)) {
-        _seedControlPoints(item, state, state.regionCount);
-    }
-    // Control vertices are stored as absolute positions, so they stay put when
-    // the center is dragged (the rays re-project through them).
-    for (const QGeoCoordinate& vertex : std::as_const(state.edgeVertices)) {
-        out << QVariant::fromValue(vertex);
-    }
-    return out;
-}
-
-double CustomSurveyManager::regionOffset(QObject* item)
-{
-    if (!_surveyItem(item)) {
-        return 0.0;
-    }
-    return _stateFor(item).regionOffset;
-}
-
-void CustomSurveyManager::setRegionOffset(QObject* item, double meters)
-{
-    if (!_surveyItem(item)) {
-        return;
-    }
-    if (!(meters >= 0.0)) {   // clamp negatives and NaN to 0
-        meters = 0.0;
-    }
-    ControlState& state = _stateFor(item);
-    state.regionOffset = meters;
-    if (PlanMasterController* controller = _itemController(item)) {
-        controller->setDirty(true);
-    }
-    emit customSurveyChanged(item);
-}
-
-void CustomSurveyManager::setCenterControlPoint(QObject* item, const QGeoCoordinate& coordinate)
-{
-    if (!_surveyItem(item) || !coordinate.isValid()) {
-        return;
-    }
-    ControlState& state = _stateFor(item);
-    state.center = coordinate;
-    state.seeded = true;
-    if (PlanMasterController* controller = _itemController(item)) {
-        controller->setDirty(true);
-    }
-    emit customSurveyChanged(item);
-}
-
-void CustomSurveyManager::setEdgeControlPoint(QObject* item, int index, const QGeoCoordinate& coordinate)
-{
-    SurveyComplexItem* survey = _surveyItem(item);
-    if (!survey || !coordinate.isValid()) {
-        return;
-    }
-    ControlState& state = _stateFor(item);
-    if (index < 0 || index >= state.edgeVertices.size()) {
-        return;
-    }
-    const QGeoCoordinate center = state.center.isValid() ? state.center : survey->surveyAreaPolygon()->center();
-    if (!center.isValid()) {
-        return;
-    }
-    // The dragged handle defines the ray direction; snap the vertex to the
-    // midpoint between the center and where that ray meets the boundary.
-    const double azimuth = center.azimuthTo(coordinate);
-    const QList<QGeoCoordinate> polygon = survey->surveyAreaPolygon()->coordinateList();
-    const QGeoCoordinate cut = _rayBoundaryIntersection(polygon, center, azimuth);
-    state.edgeVertices[index] = cut.isValid()
-        ? center.atDistanceAndAzimuth(center.distanceTo(cut) * 0.5, azimuth)
-        : coordinate;
-    state.seeded = true;
-    if (PlanMasterController* controller = _itemController(item)) {
-        controller->setDirty(true);
-    }
-    emit customSurveyChanged(item);
-}
-
-//=============================================================================
-// Region generation
-//=============================================================================
-
-QList<SplitRegion> CustomSurveyManager::_computeRegions(QObject* item, QString& errorString)
-{
-    errorString.clear();
-
-    SurveyComplexItem* survey = _surveyItem(item);
-    if (!survey) {
-        errorString = tr("Invalid survey.");
-        return {};
-    }
-
-    const QList<QGeoCoordinate> polygon = survey->surveyAreaPolygon()->coordinateList();
-    if (polygon.size() < 3) {
-        errorString = tr("Trace the survey polygon first.");
-        return {};
-    }
-
-    ControlState& state = _stateFor(item);
-    if (state.regionCount < 2) {
-        SplitRegion whole;
-        whole.polygon = polygon;
-        return { whole };
-    }
-
-    if (!state.seeded || state.edgeVertices.size() != state.regionCount) {
-        _seedControlPoints(item, state, state.regionCount);
-    }
-
-    const QGeoCoordinate center = state.center.isValid() ? state.center : survey->surveyAreaPolygon()->center();
-
-    // Memoization: the split is comparatively expensive (ray casts + wedge walk
-    // + inset + clip) and every live frame asks for regions from several places
-    // (map overlays, per-region flight paths, the editor's region list). Build a
-    // signature of everything the split depends on; return the cached result
-    // unless one of those inputs actually changed.
-    QStringList sigParts;
-    sigParts << QString::number(state.regionCount)
-             << QString::number(state.regionOffset, 'f', 3);
-    for (const QGeoCoordinate& c : polygon) {
-        sigParts << QString::number(c.latitude(), 'f', 9) << QString::number(c.longitude(), 'f', 9);
-    }
-    sigParts << QString::number(center.latitude(), 'f', 9) << QString::number(center.longitude(), 'f', 9);
-    for (const QGeoCoordinate& v : std::as_const(state.edgeVertices)) {
-        sigParts << QString::number(v.latitude(), 'f', 9) << QString::number(v.longitude(), 'f', 9);
-    }
-    const QString sig = sigParts.join(QLatin1Char('|'));
-    if (_cachedRegionSig.value(item) == sig && _cachedRegions.contains(item)) {
-        return _cachedRegions.value(item);
-    }
-
-    // Cut = where the ray from the center through each (fixed) control vertex
-    // meets the boundary.
-    SplitInput input;
-    input.masterPolygon    = polygon;
-    input.center           = center;
-    input.regionSeparation = state.regionOffset;
-    for (const QGeoCoordinate& vertex : std::as_const(state.edgeVertices)) {
-        const QGeoCoordinate cut = _rayBoundaryIntersection(polygon, center, center.azimuthTo(vertex));
-        if (cut.isValid()) {
-            input.edgePoints.append(cut);
-        }
-    }
-
-    const QList<SplitRegion> regions = _splitter.split(input, errorString);
-    _cachedRegionSig[item] = sig;
-    _cachedRegions[item]   = regions;
-    return regions;
-}
-
-QString CustomSurveyManager::_masterParamSignature(SurveyComplexItem* survey) const
-{
-    if (!survey) {
-        return QString();
-    }
-    CameraCalc* cc = survey->cameraCalc();
-    const QStringList parts = {
-        // Survey-level params. Grid angle is deliberately EXCLUDED — it is
-        // mirrored to the shadows directly on every sync (cheap), so dragging
-        // the angle slider never triggers the heavy save()/load() reconfigure.
-        survey->flyAlternateTransects()->rawValue().toString(),
-        survey->splitConcavePolygons()->rawValue().toString(),
-        // Transect-style params.
-        survey->turnAroundDistance()->rawValue().toString(),
-        survey->cameraTriggerInTurnAround()->rawValue().toString(),
-        survey->hoverAndCapture()->rawValue().toString(),
-        survey->refly90Degrees()->rawValue().toString(),
-        survey->terrainAdjustTolerance()->rawValue().toString(),
-        survey->terrainAdjustMaxDescentRate()->rawValue().toString(),
-        survey->terrainAdjustMaxClimbRate()->rawValue().toString(),
-        // Camera calc: the adjusted footprints capture the net transect spacing
-        // regardless of which input (overlap / distance / camera) produced it.
-        QString::number(static_cast<int>(cc->distanceMode())),
-        cc->adjustedFootprintSide()->rawValue().toString(),
-        cc->adjustedFootprintFrontal()->rawValue().toString(),
-        cc->distanceToSurface()->rawValue().toString(),
-        cc->valueSetIsDistance()->rawValue().toString(),
-    };
-    return parts.join(QLatin1Char('|'));
-}
-
-QVariantList CustomSurveyManager::regionPolygons(QObject* item)
-{
-    QString errorString;
-    const QList<SplitRegion> regions = _computeRegions(item, errorString);
-    _setLastError(errorString);
+    if (!error.isEmpty())
+        _setLastError(error);
+    else
+        _setLastError(QString());
 
     QVariantList out;
-    for (int i = 0; i < regions.size(); ++i) {
+
+    for (const RegionInfo& region : regions) {
+
         QVariantMap map;
-        map[QStringLiteral("name")]        = tr("Region %1").arg(i + 1);
-        map[QStringLiteral("vertexCount")] = regions[i].polygon.size();
-        map[QStringLiteral("area")]        = _polygonArea(regions[i].polygon);
-        map[QStringLiteral("polygon")]     = _coordinatesToVariantList(regions[i].polygon);
+
+        map["name"] =
+            region.name;
+
+        map["fileSuffix"] =
+            region.fileSuffix;
+
+        map["vertexCount"] =
+            region.polygon.size();
+
+        map["area"] =
+            _polygonArea(region.polygon);
+
+        map["polygon"] =
+            _coordinatesToVariantList(
+                region.polygon);
+
         out << map;
     }
+
     return out;
 }
 
-void CustomSurveyManager::_syncRegionSurveys(QObject* master, const QList<SplitRegion>& regions)
+QJsonObject
+CustomSurveyManager::_metadataForItem(QObject* item) const
 {
-    SurveyComplexItem* masterSurvey = _surveyItem(master);
-    PlanMasterController* controller = _itemController(master);
-    if (!masterSurvey || !controller) {
-        return;
-    }
+    QJsonObject obj;
 
-    QList<SurveyComplexItem*>& shadows = _regionSurveys[master];
+    obj["version"] = 1;
+    obj["regionCount"] =
+        _regionCountForSurvey(item);
+    obj["sourceSequence"] =
+        _sequenceNumber(item);
 
-    // Undivided: no per-region shadows.
-    if (regions.size() < 2) {
-        for (SurveyComplexItem* shadow : std::as_const(shadows)) {
-            if (shadow) {
-                shadow->deleteLater();
-            }
-        }
-        shadows.clear();
-        _lastParamSig.remove(master);
-        return;
-    }
-
-    // Grow / shrink the shadow list to match the region count.
-    const int oldCount = shadows.size();
-    while (shadows.size() < regions.size()) {
-        shadows.append(new SurveyComplexItem(controller, /*flyView*/ false, QString()));
-    }
-    while (shadows.size() > regions.size()) {
-        if (SurveyComplexItem* extra = shadows.takeLast()) {
-            extra->deleteLater();
-        }
-    }
-
-    // Reconfigure shadow PARAMETERS only on a genuine parameter edit (or for a
-    // newly created shadow). save() regenerates every mission item and load()
-    // reparses it, so doing this per frame is what made dragging laggy. The
-    // parameter signature excludes the grid angle and the polygon, so neither a
-    // control-point / whole-survey drag nor an angle-slider drag lands here.
-    const QString paramSig      = _masterParamSignature(masterSurvey);
-    const bool    paramsChanged = (_lastParamSig.value(master) != paramSig);
-    const bool    grew          = regions.size() > oldCount;
-    if (paramsChanged || grew) {
-        QJsonArray masterArray;
-        masterSurvey->save(masterArray);
-        const QJsonObject masterSurveyJson = masterArray.isEmpty() ? QJsonObject() : masterArray.first().toObject();
-        for (int i = 0; i < shadows.size(); ++i) {
-            if (paramsChanged || i >= oldCount) {
-                QString errorString;
-                shadows[i]->load(masterSurveyJson, 1, errorString);
-            }
-        }
-        _lastParamSig[master] = paramSig;
-    }
-
-    // Mirror the grid angle live. It is the one continuously-dragged parameter,
-    // so rather than the heavy reconfigure path above we copy the single fact
-    // directly (guarded, so an unchanged angle never forces a needless grid
-    // rebuild). The shadow rebuilds its transects synchronously on the change.
-    const QVariant masterAngle = masterSurvey->gridAngle()->rawValue();
-    for (SurveyComplexItem* shadow : std::as_const(shadows)) {
-        if (shadow->gridAngle()->rawValue() != masterAngle) {
-            shadow->gridAngle()->setRawValue(masterAngle);
-        }
-    }
-
-    // Set each region's sub-polygon, but only when it actually changed, so an
-    // idle sync (or one where only some regions moved) never rebuilds a grid
-    // needlessly. Setting the polygon rebuilds that region's transects
-    // synchronously (for fixed-altitude modes).
-    for (int i = 0; i < regions.size(); ++i) {
-        QGCMapPolygon* polygon = shadows[i]->surveyAreaPolygon();
-        if (polygon->coordinateList() != regions[i].polygon) {
-            polygon->beginReset();
-            polygon->clear();
-            polygon->appendVertices(regions[i].polygon);
-            polygon->endReset();
-        }
-    }
+    return obj;
 }
 
-QVariantList CustomSurveyManager::regionFlightPaths(QObject* item)
-{
-    QString errorString;
-    const QList<SplitRegion> regions = _computeRegions(item, errorString);
-    _syncRegionSurveys(item, regions);
+// =========================================================
+//
+// Remaining work:
+//
+// SurveyItemEditor.qml
+//
+//      regionCount()
+//          ↓
+//
+//      selected survey
+//          ↓
+//
+//      sequence number
+//          ↓
+//
+//      _regionCountBySurvey
+//
+// SurveyMapVisual.qml
+//
+//      same migration.
+//
+// =========================================================
 
-    QVariantList out;
-    for (SurveyComplexItem* shadow : std::as_const(_regionSurveys[item])) {
-        if (shadow) {
-            out << shadow->property("visualTransectPoints");
-        }
+// =====================================================================
+
+// =====================================================================
+// REGION IMPLEMENTATION ROADMAP
+//
+// Plugin-only implementation.
+// Do NOT modify QGroundControl core classes.
+//
+// Remaining implementation order:
+//
+// [ ] 1. Per-survey region storage
+//       - Replace global /*removed_global_regionCount*/ usage
+//       - Introduce sequenceNumber -> regionCount map
+//       - Default missing entries to 1
+//
+// [ ] 2. Region accessors
+//       - regionCount(QObject*)
+//       - setRegionCount(QObject*, int)
+//
+// [ ] 3. Serialization
+//       - decorateMissionJson()
+//       - restoreFromPlanJson()
+//       - Persist regionCount with each survey
+//
+// [ ] 4. Export
+//       - saveRegionPlans()
+//       - Exported surveys become regionCount = 1
+//
+// [ ] 5. Geometry
+//       - Finish radial region clipping
+//       - Remove duplicate vertices
+//       - Remove tiny regions
+//       - Ensure CCW winding
+//
+// [ ] 6. UI
+//       - SurveyItemEditor uses selected survey regionCount
+//       - SurveyMapVisual refreshes selected survey only
+//
+// [ ] 7. Cleanup
+//       - Remove obsolete rectangle helpers
+//       - Rename remaining region references
+//       - Final compile/review
+//
+// =====================================================================
+
+int
+CustomSurveyManager::_surveyOrdinal(QObject* survey) const
+{
+    if (!survey)
+        return 1;
+
+    PlanMasterController* controller =
+        _itemPlanMasterController(survey);
+
+    if (!controller)
+        return 1;
+
+    QmlObjectListModel* visualItems =
+        controller->missionController()->visualItems();
+
+    if (!visualItems)
+        return 1;
+
+    int ordinal = 1;
+
+    for (int i = 0; i < visualItems->count(); ++i) {
+
+        QObject* item = visualItems->get(i);
+
+        if (!isCustomSurvey(item))
+            continue;
+
+        if (item == survey)
+            return ordinal;
+
+        ++ordinal;
     }
-    return out;
+
+    return 1;
 }
 
-//=============================================================================
+//=====================================================================
 // Export
-//=============================================================================
+//=====================================================================
 
-QJsonObject CustomSurveyManager::_buildRegionSurveyJson(PlanMasterController* controller,
-                                                        const QJsonObject& masterSurveyJson,
-                                                        const QList<QGeoCoordinate>& regionPolygon,
-                                                        bool& terrainPending) const
+
+
+//=====================================================================
+// Export helpers
+//=====================================================================
+
+// Replace the polygon for a single survey inside a copied mission JSON.
+// The live SurveyComplexItem is never modified.
+//
+// TODO:
+//  * Locate survey by sequence number.
+//  * Replace polygon coordinates.
+//  * Force exported regionCount = 1.
+//  * Preserve all remaining mission metadata.
+//
+static bool
+_replaceSurveyPolygonInPlan(
+    QJsonObject& root,
+    int surveySequence,
+    const QJsonArray& polygonCoords)
 {
-    // Build the region's survey from a genuine, freshly-configured survey
-    // object so its transects are recomputed for the sub-polygon. We never
-    // touch the live survey and never block its signals (that was the bug in
-    // the prior attempt which left every export with the parent's grid).
-    SurveyComplexItem* temp = new SurveyComplexItem(controller, /*flyView*/ false, QString());
+    Q_UNUSED(root)
+    Q_UNUSED(surveySequence)
+    Q_UNUSED(polygonCoords)
 
-    QString errorString;
-    if (!temp->load(masterSurveyJson, 1, errorString)) {
-        temp->deleteLater();
-        return {};
-    }
+    // TODO:
+    // Replace the survey polygon directly in the
+    // copied mission JSON.
 
-    QGCMapPolygon* polygon = temp->surveyAreaPolygon();
-    polygon->beginReset();
-    polygon->clear();
-    polygon->appendVertices(regionPolygon);
-    polygon->endReset();     // emits pathChanged -> synchronous transect rebuild
-
-    if (temp->readyForSaveState() != VisualMissionItem::ReadyForSave) {
-        terrainPending = true;
-    }
-
-    QJsonArray items;
-    temp->save(items);
-    temp->deleteLater();
-
-    return items.isEmpty() ? QJsonObject() : items.first().toObject();
+    return false;
 }
 
-bool CustomSurveyManager::saveRegionPlans(QObject* item, const QString& folder)
+bool
+CustomSurveyManager::saveRegionPlans(
+    QObject* planMasterControllerObject,
+    QObject* item,
+    const QString& folder)
 {
-    SurveyComplexItem* survey = _surveyItem(item);
-    if (!survey) {
-        _setLastError(tr("Invalid survey."));
-        return false;
-    }
-    if (!isCustomSurvey(survey)) {
-        _setLastError(tr("Only custom surveys can be exported."));
-        return false;
-    }
-    PlanMasterController* controller = _itemController(survey);
-    if (!controller) {
-        _setLastError(tr("No plan controller available."));
+    PlanMasterController* planMasterController =
+        qobject_cast<PlanMasterController*>(planMasterControllerObject);
+
+    SurveyComplexItem* surveyItem =
+        _surveyItem(item);
+
+    if (!planMasterController || !surveyItem) {
+        _setLastError(tr("Unable to save region plans."));
         return false;
     }
 
-    const QDir dir(folder);
-    if (folder.isEmpty() || !dir.exists()) {
-        _setLastError(tr("Output folder does not exist: %1").arg(folder));
+    if (!isCustomSurvey(surveyItem)) {
+        _setLastError(tr("Only custom surveys may be exported."));
+        return false;
+    }
+
+    QDir outputDir(folder);
+
+    if (!outputDir.exists()) {
+        _setLastError(
+            tr("Output folder does not exist: %1").arg(folder));
         return false;
     }
 
     QString errorString;
-    const QList<SplitRegion> regions = _computeRegions(survey, errorString);
+
+    QList<RegionInfo> regions =
+        _buildRegions(surveyItem, errorString);
+
     if (!errorString.isEmpty()) {
         _setLastError(errorString);
         return false;
     }
+
     if (regions.isEmpty()) {
-        _setLastError(tr("There are no regions to export."));
+        _setLastError(tr("No regions generated."));
         return false;
     }
 
-    // Snapshot the master survey's parameters once.
-    QJsonArray masterArray;
-    survey->save(masterArray);
-    if (masterArray.isEmpty()) {
-        _setLastError(tr("Unable to serialize the survey."));
+    QGCMapPolygon* surveyPolygon =
+        surveyItem->surveyAreaPolygon();
+
+    if (!surveyPolygon) {
+        _setLastError(tr("Survey polygon is null."));
         return false;
     }
-    const QJsonObject masterSurveyJson = masterArray.first().toObject();
 
-    // Reuse the full plan envelope (header, planned home, vehicle profile,
-    // empty geofence/rally) exactly as core would write it.
-    const QJsonObject templateRoot = controller->saveToJson().object();
+    const bool polygonSignalsBlocked =
+        surveyPolygon->blockSignals(true);
 
-    QString baseName = QFileInfo(controller->currentPlanFile()).completeBaseName();
-    if (baseName.isEmpty()) {
-        baseName = QStringLiteral("custom-survey");
-    }
+    const QList<QGeoCoordinate> originalPolygon =
+        surveyPolygon->coordinateList();
 
-    int saved = 0;
-    bool terrainPending = false;
+    const bool wasDirty =
+        planMasterController->dirty();
 
-    for (int i = 0; i < regions.size(); ++i) {
-        QJsonObject regionSurveyJson = _buildRegionSurveyJson(controller, masterSurveyJson, regions[i].polygon, terrainPending);
-        if (regionSurveyJson.isEmpty()) {
+    QString currentPlan =
+        planMasterController->currentPlanFile();
+
+    QString baseName =
+        QFileInfo(
+            currentPlan.isEmpty()
+                ? QStringLiteral("custom-survey.plan")
+                : currentPlan).completeBaseName();
+
+    int savedCount = 0;
+
+    const int surveyIndex =
+        _surveyOrdinal(surveyItem);
+
+    for (const RegionInfo& region : regions) {
+
+        if (!_applyPolygon(
+                surveyPolygon,
+                region.polygon))
+        {
+            _applyPolygon(
+                surveyPolygon,
+                originalPolygon);
             continue;
         }
 
-        // Each exported region is a standalone, single-region custom survey.
-        QJsonObject customSurvey;
-        customSurvey[QStringLiteral("version")]     = 5;
-        customSurvey[QStringLiteral("regionCount")] = 1;
-        regionSurveyJson[QStringLiteral("customSurvey")] = customSurvey;
+        QJsonDocument plan =
+            planMasterController->saveToJson();
 
-        QJsonObject root = templateRoot;
-        QJsonObject mission = root.value(QStringLiteral("mission")).toObject();
-        mission[QStringLiteral("items")] = QJsonArray{ regionSurveyJson };
-        root[QStringLiteral("mission")] = mission;
+        //------------------------------------------------------------
+        // Exported regions become independent custom surveys.
+        // Reset their region count to 1 so reopening the plan does
+        // not immediately regenerate additional regions.
+        //------------------------------------------------------------
 
-        const QString filename = dir.absoluteFilePath(QStringLiteral("%1-region_%2.plan").arg(baseName).arg(i + 1));
-        if (_writePlanFile(QJsonDocument(root), filename)) {
-            ++saved;
+        QJsonObject root = plan.object();
+
+        if (root.contains("mission")) {
+
+            QJsonObject mission =
+                root["mission"].toObject();
+
+            QJsonArray items =
+                mission["items"].toArray();
+
+            int missionIndex = -1;
+
+            if (_findMissionObjectBySequence(
+                    items,
+                    _sequenceNumber(surveyItem),
+                    missionIndex))
+            {
+                QJsonObject item =
+                    items[missionIndex].toObject();
+
+                QJsonObject custom =
+                    item["customSurvey"].toObject();
+
+                custom["regionCount"] = 1;
+
+                // This exported plan now represents only one region.
+                custom["sourceSequence"] = 0;
+                custom["regionIndex"] = savedCount;
+
+                item["customSurvey"] = custom;
+
+                items[missionIndex] = item;
+            }
+
+            mission["items"] = items;
+            root["mission"] = mission;
+
+            plan = QJsonDocument(root);
         }
+
+        const QString filename =
+            outputDir.absoluteFilePath(
+                QString(
+                    "custom-survey_%1-region_%2.plan")
+                    .arg(surveyIndex)
+                    .arg(savedCount + 1));
+
+        if (_writePlanFile(plan, filename))
+            ++savedCount;
+
+        // Restore immediately so the live survey never
+        // remains in a temporary export state.
+        _applyPolygon(
+            surveyPolygon,
+            originalPolygon);
     }
 
-    if (saved == 0) {
-        _setLastError(tr("Failed to export any region plans."));
-        return false;
-    }
+    _applyPolygon(
+        surveyPolygon,
+        originalPolygon);
 
-    QString message = tr("Exported %1 region plan(s) to %2.").arg(saved).arg(folder);
-    if (terrainPending) {
-        message += QStringLiteral(" ") + tr("Terrain-follow altitudes will be recomputed when a region plan is opened.");
-    }
-    _setLastError(message);
-    return true;
+    surveyPolygon->blockSignals(
+        polygonSignalsBlocked);
+
+    planMasterController->setDirty(wasDirty);
+
+    _setLastError(
+        tr("Saved %1 region plan(s).")
+            .arg(savedCount));
+
+    return savedCount > 0;
 }
 
-bool CustomSurveyManager::_writePlanFile(const QJsonDocument& document, const QString& filename)
+void
+//=====================================================================
+// Mission serialization
+//=====================================================================
+
+CustomSurveyManager::decorateMissionJson(
+    PlanMasterController* planMasterController,
+    QJsonObject& missionJson)
 {
-    QFile file(filename);
-    if (!file.open(QIODevice::WriteOnly | QIODevice::Truncate | QIODevice::Text)) {
-        _setLastError(tr("Unable to write %1").arg(filename));
-        return false;
-    }
-    file.write(document.toJson(QJsonDocument::Indented));
-    return true;
-}
-
-//=============================================================================
-// Mission JSON save / restore (plan-file plugin hooks)
-//=============================================================================
-
-int CustomSurveyManager::_sequenceNumberFromMissionObject(const QJsonObject& itemObject) const
-{
-    static constexpr const char* kDoJumpIdKey = "doJumpId";
-    static constexpr const char* kTransectStyleKey = "TransectStyleComplexItem";
-    static constexpr const char* kTransectItemsKey = "Items";
-
-    if (itemObject.contains(kDoJumpIdKey)) {
-        return itemObject[kDoJumpIdKey].toInt(-1);
-    }
-
-    const QJsonArray items = itemObject[kTransectStyleKey].toObject()[kTransectItemsKey].toArray();
-    if (!items.isEmpty()) {
-        return items.first().toObject()[kDoJumpIdKey].toInt(-1);
-    }
-    return -1;
-}
-
-bool CustomSurveyManager::_isSurveyMissionObject(const QJsonObject& itemObject) const
-{
-    return itemObject[QStringLiteral("type")].toString() == QStringLiteral("ComplexItem") &&
-           itemObject[QStringLiteral("complexItemType")].toString() == QStringLiteral("survey");
-}
-
-QJsonObject CustomSurveyManager::_metadataForItem(QObject* item)
-{
-    ControlState& state = _stateFor(item);
-
-    QJsonObject obj;
-    obj[QStringLiteral("version")]        = 5;
-    obj[QStringLiteral("regionCount")]    = state.regionCount;
-    obj[QStringLiteral("regionOffset")]   = state.regionOffset;
-    obj[QStringLiteral("sourceSequence")] = _sequenceNumber(item);
-
-    if (state.center.isValid()) {
-        QJsonValue value;
-        JsonHelper::saveGeoCoordinate(state.center, true /*writeAltitude*/, value);
-        obj[QStringLiteral("center")] = value;
-    }
-    if (!state.edgeVertices.isEmpty()) {
-        QJsonValue value;
-        JsonHelper::saveGeoCoordinateArray(state.edgeVertices, true /*writeAltitude*/, value);
-        obj[QStringLiteral("edgeVertices")] = value;
-    }
-    return obj;
-}
-
-void CustomSurveyManager::decorateMissionJson(PlanMasterController* controller, QJsonObject& missionJson)
-{
-    if (!controller || _customSurveyItems.isEmpty()) {
+    if (!planMasterController || _customSurveyItems.isEmpty())
         return;
-    }
 
-    QHash<int, QObject*> bySequence;
+    static constexpr const char* kItemsKey = "items";
+    static constexpr const char* kCustomSurveyKey = "customSurvey";
+
+    QHash<int, QObject*> customItems;
+
     for (QObject* item : std::as_const(_customSurveyItems)) {
-        if (!item || _itemController(item) != controller) {
+
+        if (!item)
             continue;
-        }
+
+        if (_itemPlanMasterController(item) != planMasterController)
+            continue;
+
         const int seq = _sequenceNumber(item);
-        if (seq >= 0) {
-            bySequence.insert(seq, item);
-        }
+
+        if (seq >= 0)
+            customItems.insert(seq, item);
     }
 
-    QJsonArray items = missionJson[QStringLiteral("items")].toArray();
+    QJsonArray items = missionJson[kItemsKey].toArray();
+
     for (int i = 0; i < items.size(); ++i) {
+
         QJsonObject obj = items[i].toObject();
-        if (!_isSurveyMissionObject(obj)) {
+
+        if (!_isSurveyMissionObject(obj))
             continue;
-        }
-        QObject* custom = bySequence.value(_sequenceNumberFromMissionObject(obj), nullptr);
-        if (!custom) {
+
+        QObject* custom =
+            customItems.value(
+                _sequenceNumberFromMissionObject(obj),
+                nullptr);
+
+        if (!custom)
             continue;
-        }
-        obj[QStringLiteral("customSurvey")] = _metadataForItem(custom);
+
+        _attachSurvey(custom);
+
+        QJsonObject metadata =
+            _metadataForItem(custom);
+
+        metadata["regionCount"] =
+            _regionCountBySurvey.value(
+                custom,
+                1);
+
+        obj[kCustomSurveyKey] =
+            metadata;
+
         items[i] = obj;
     }
-    missionJson[QStringLiteral("items")] = items;
+
+    missionJson[kItemsKey] = items;
 }
 
-void CustomSurveyManager::restoreFromPlanJson(PlanMasterController* controller, const QJsonObject& planJson)
+void
+CustomSurveyManager::restoreFromPlanJson(
+    PlanMasterController* planMasterController,
+    const QJsonObject& planJson)
 {
-    if (!controller) {
+    if (!planMasterController)
         return;
+
+    static constexpr const char* kMissionKey = "mission";
+    static constexpr const char* kItemsKey = "items";
+    static constexpr const char* kCustomSurveyKey = "customSurvey";
+
+    const QJsonObject mission =
+        planJson[kMissionKey].toObject();
+
+    const QJsonArray items =
+        mission[kItemsKey].toArray();
+
+    QSet<int> sequences;
+
+    for (const QJsonValue& value : items) {
+
+        const QJsonObject obj = value.toObject();
+
+        if (!obj.contains(kCustomSurveyKey))
+            continue;
+
+        const int seq =
+            _sequenceNumberFromMissionObject(obj);
+
+        if (seq >= 0)
+            sequences.insert(seq);
     }
 
-    const QJsonArray items = planJson[QStringLiteral("mission")].toObject()[QStringLiteral("items")].toArray();
+    if (sequences.isEmpty())
+        return;
 
-    QHash<int, QJsonObject> customBySequence;
-    for (const QJsonValue& value : items) {
-        const QJsonObject obj = value.toObject();
-        if (!obj.contains(QStringLiteral("customSurvey"))) {
+    QmlObjectListModel* visualItems =
+        planMasterController
+            ->missionController()
+            ->visualItems();
+
+    for (int i = 0; i < visualItems->count(); ++i) {
+
+        QObject* item = visualItems->get(i);
+
+        if (!sequences.contains(
+                _sequenceNumber(item)))
+            continue;
+
+        _markCustomSurvey(
+            item,
+            false);
+
+        int itemIndex = -1;
+
+        if (!_findMissionObjectBySequence(
+                items,
+                _sequenceNumber(item),
+                itemIndex))
+        {
             continue;
         }
-        const int seq = _sequenceNumberFromMissionObject(obj);
-        if (seq >= 0) {
-            customBySequence.insert(seq, obj[QStringLiteral("customSurvey")].toObject());
-        }
-    }
-    if (customBySequence.isEmpty()) {
-        return;
-    }
 
-    auto parse = [](const QJsonObject& cs) {
-        ControlState state;
-        state.regionCount = cs.value(QStringLiteral("regionCount")).toInt(1);
-        state.regionOffset = cs.value(QStringLiteral("regionOffset")).toDouble(0.0);
-        QString errorString;
-        if (cs.contains(QStringLiteral("center"))) {
-            QGeoCoordinate center;
-            JsonHelper::loadGeoCoordinate(cs.value(QStringLiteral("center")), false, center, errorString);
-            state.center = center;
-        }
-        if (cs.contains(QStringLiteral("edgeVertices"))) {
-            QList<QGeoCoordinate> vertices;
-            JsonHelper::loadGeoCoordinateArray(cs.value(QStringLiteral("edgeVertices")), false, vertices, errorString);
-            state.edgeVertices = vertices;
-        }
-        state.seeded = true;
-        return state;
-    };
+        const QJsonObject mission =
+            items[itemIndex].toObject();
 
-    QmlObjectListModel* visualItems = controller->missionController()->visualItems();
-    QSet<int> matched;
-    if (visualItems) {
-        for (int i = 0; i < visualItems->count(); ++i) {
-            QObject* item = visualItems->get(i);
-            const int seq = _sequenceNumber(item);
-            if (!customBySequence.contains(seq)) {
-                continue;
-            }
-            _markCustomSurvey(item, false /*setDirty*/);
-            ControlState& state = _stateFor(item);
-            state = parse(customBySequence.value(seq));
-            if (SurveyComplexItem* survey = _surveyItem(item)) {
-                state.lastPolygonCenter = survey->surveyAreaPolygon()->center();
-            }
-            matched.insert(seq);
-            emit customSurveyChanged(item);
-        }
-    }
+        const QJsonObject custom =
+            mission["customSurvey"].toObject();
 
-    // Anything not yet materialized is stashed and transferred on attach.
-    for (auto it = customBySequence.constBegin(); it != customBySequence.constEnd(); ++it) {
-        if (!matched.contains(it.key())) {
-            _pendingState.insert(it.key(), parse(it.value()));
-        }
+        _setRegionCountForSurvey(
+            item,
+            custom["regionCount"].toInt(1));
     }
 }
 
-//=============================================================================
-// Misc helpers
-//=============================================================================
-
-double CustomSurveyManager::_polygonArea(const QList<QGeoCoordinate>& coordinates) const
-{
-    if (coordinates.size() < 3) {
-        return 0.0;
-    }
-    const QGeoCoordinate origin = coordinates.first();
-    QList<QPointF> local;
-    for (const QGeoCoordinate& c : coordinates) {
-        double n, e, d;
-        QGCGeo::convertGeoToNed(c, origin, n, e, d);
-        local.append(QPointF(e, n));
-    }
-    double area = 0.0;
-    for (int i = 0; i < local.size(); ++i) {
-        const QPointF& p0 = local[i];
-        const QPointF& p1 = local[(i + 1) % local.size()];
-        area += (p0.x() * p1.y()) - (p1.x() * p0.y());
-    }
-    return std::abs(area) * 0.5;
-}
-
-QVariantList CustomSurveyManager::_coordinatesToVariantList(const QList<QGeoCoordinate>& coordinates) const
-{
-    QVariantList out;
-    for (const QGeoCoordinate& c : coordinates) {
-        out << QVariant::fromValue(c);
-    }
-    return out;
-}
-
-void CustomSurveyManager::_setLastError(const QString& errorString)
-{
-    if (_lastError == errorString) {
-        return;
-    }
-    _lastError = errorString;
-    emit lastErrorChanged();
-}

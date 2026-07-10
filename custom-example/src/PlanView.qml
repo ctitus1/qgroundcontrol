@@ -8,11 +8,11 @@
  ****************************************************************************/
 
 /*
- * CUSTOM PLUGIN OVERRIDE — verbatim copy of core src/QmlControls/PlanView.qml
- * (QGC v5.0.8). The ONLY functional change is the "Custom Survey" branch in
- * insertComplexItemAfterCurrent() below. Re-sync this file with core on every
- * QGC upgrade, then re-apply that one branch.
+ * Custom Plan View integration.
+ *
+ * Adds custom survey functionality to mission planning.
  */
+
 
 import QtQuick
 import QtQuick.Controls
@@ -285,17 +285,14 @@ Item {
 
     function insertComplexItemAfterCurrent(complexItemName) {
         var nextIndex = _missionController.currentPlanViewVIIndex + 1
-        // CUSTOM SURVEY: "Custom Survey" is not a core complex-item type. Create a
-        // stock Survey and flag it via the plugin manager. This is the ONLY change
-        // from the core PlanView.qml (see file header).
         if (complexItemName === customSurveyManager.customSurveyName) {
             var surveyItem = _missionController.insertComplexMissionItem(_missionController.surveyComplexItemName, mapCenter(), nextIndex, true /* makeCurrentItem */)
             if (surveyItem) {
                 customSurveyManager.markCustomSurvey(surveyItem)
             }
-            return
+        } else {
+            _missionController.insertComplexMissionItem(complexItemName, mapCenter(), nextIndex, true /* makeCurrentItem */)
         }
-        _missionController.insertComplexMissionItem(complexItemName, mapCenter(), nextIndex, true /* makeCurrentItem */)
     }
 
     function insertTakeoffItemAfterCurrent() {

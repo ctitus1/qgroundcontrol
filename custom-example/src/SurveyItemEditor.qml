@@ -1,8 +1,8 @@
+
 /*
- * CUSTOM PLUGIN OVERRIDE — copy of core src/QmlControls/SurveyItemEditor.qml
- * (QGC v5.0.8) plus a "Custom Regions" section that is only visible for surveys
- * flagged as custom (customSurveyManager.isCustomSurvey). A plain Survey is
- * unaffected. Re-sync with core on QGC upgrade, then re-apply the custom block.
+ * Mission editor UI for custom surveys.
+ *
+ * Displays and edits per-survey region settings.
  */
 
 import QtQuick
@@ -42,17 +42,38 @@ TransectStyleComplexItemEditor {
 
     Component.onCompleted: _refreshCustomRegions()
 
+
+        
+
+
     Connections {
         target: missionItem.surveyAreaPolygon
-        function onPathChanged() { _refreshCustomRegions() }
+
+        function onPathChanged() {
+            _refreshCustomRegions()
+        }
     }
 
     Connections {
         target: customSurveyManager
+
         function onCustomSurveyChanged(item) {
             if (item === missionItem) {
                 _refreshCustomRegions()
             }
+        }
+    }
+
+
+    Connections {
+        target: customSurveyManager
+
+        function onRegionCountChanged() {
+            _refreshCustomRegions()
+
+            regionCountSpinBox.value =
+                customSurveyManager.regionCountForSurvey(
+                    missionItem)
         }
     }
 
@@ -74,7 +95,7 @@ TransectStyleComplexItemEditor {
 
             QGCSlider {
                 id:                     angleSlider
-                from:           0
+                from: 1
                 to:           359
                 stepSize:               1
                 tickmarksEnabled:       false
@@ -129,7 +150,6 @@ TransectStyleComplexItemEditor {
                 ]
             }
 
-            // ===== CUSTOM SURVEY: region division controls (only for custom surveys) =====
             SectionHeader {
                 id:                 customRegionsHeader
                 Layout.columnSpan:  2
@@ -139,49 +159,27 @@ TransectStyleComplexItemEditor {
             }
 
             ColumnLayout {
+
+            RowLayout {
+                spacing: ScreenTools.defaultFontPixelWidth
+
+                QGCLabel {
+                    text: "Regions"
+                }
+
+                SpinBox {
+                    id: regionCountSpinBox
+                    from: 1
+                    to: 20
+                    value: customSurveyManager.regionCountForSurvey(missionItem)
+                    onValueChanged: customSurveyManager.setRegionCountForSurvey(missionItem, value)
+                }
+            }
+
                 Layout.columnSpan:  2
                 Layout.fillWidth:   true
                 spacing:            _margin
                 visible:            customRegionsHeader.visible && customRegionsHeader.checked
-
-                RowLayout {
-                    Layout.fillWidth:   true
-                    spacing:            ScreenTools.defaultFontPixelWidth
-
-                    QGCLabel { text: qsTr("Sub-regions") }
-
-                    Item { Layout.fillWidth: true }
-
-                    SpinBox {
-                        id:                 regionCountSpinBox
-                        from:               1
-                        to:                 20
-                        value:              customSurveyManager.regionCount(missionItem)
-                        onValueModified:    customSurveyManager.setRegionCount(missionItem, value)
-                    }
-                }
-
-                // Inward gap between adjacent regions (n>1 only). Regions still
-                // reach the survey boundary; only their shared edges pull in.
-                RowLayout {
-                    Layout.fillWidth:   true
-                    spacing:            ScreenTools.defaultFontPixelWidth
-                    visible:            regionCountSpinBox.value > 1
-
-                    QGCLabel { text: qsTr("Region offset") }
-
-                    Item { Layout.fillWidth: true }
-
-                    QGCTextField {
-                        id:                     regionOffsetField
-                        Layout.preferredWidth:  ScreenTools.defaultFontPixelWidth * 12
-                        showUnits:              true
-                        unitsLabel:             QGroundControl.unitsConversion.appSettingsHorizontalDistanceUnitsString
-                        // Displayed in the app's distance units; stored as meters.
-                        text:                   Number(QGroundControl.unitsConversion.metersToAppSettingsHorizontalDistanceUnits(customSurveyManager.regionOffset(missionItem))).toFixed(1)
-                        onEditingFinished:      customSurveyManager.setRegionOffset(missionItem, Number(QGroundControl.unitsConversion.appSettingsHorizontalDistanceUnitsToMeters(parseFloat(text))))
-                    }
-                }
 
                 Repeater {
                     model: _customRegions
@@ -190,12 +188,14 @@ TransectStyleComplexItemEditor {
                         Layout.fillWidth: true
 
                         QGCLabel {
-                            Layout.fillWidth:   true
-                            text:               modelData.name
+                            Layout.fillWidth: true
+                            text: modelData.name
                         }
+
                         QGCLabel {
                             text: QGroundControl.unitsConversion.squareMetersToAppSettingsAreaUnits(modelData.area).toFixed(2) + " " + QGroundControl.unitsConversion.appSettingsAreaUnitsString
                         }
+
                         QGCLabel {
                             text: qsTr("%1 pts").arg(modelData.vertexCount)
                         }
@@ -207,16 +207,31 @@ TransectStyleComplexItemEditor {
                     wrapMode:           Text.WordWrap
                     color:              QGroundControl.globalPalette.warningText
                     text:               customSurveyManager.lastError
-                    visible:            customSurveyManager.lastError !== ""
+                    visible:            _customRegions.length === 0 && customSurveyManager.lastError !== ""
                 }
 
                 QGCButton {
                     Layout.alignment:   Qt.AlignHCenter
-                    text:               qsTr("Export Region Plans")
+                    text:               qsTr("Save Region Plans")
                     enabled:            missionItem.surveyAreaPolygon.isValid && _customRegions.length > 0
+
                     onClicked:          regionFolderDialog.openForLoad()
                 }
             }
+        }
+    }
+
+    QGCFileDialog {
+        id:             regionFolderDialog
+        folder:         QGroundControl.settingsManager.appSettings.missionSavePath
+        title:          qsTr("Select Output Folder")
+        selectFolder:   true
+
+        onAcceptedForLoad: (folder) => {
+            customSurveyManager.saveRegionPlans(missionItem.masterController, missionItem, folder)
+            mainWindow.showMessageDialog(qsTr("Custom Regions"), customSurveyManager.lastError)
+            _refreshCustomRegions()
+            close()
         }
     }
 
@@ -231,19 +246,20 @@ TransectStyleComplexItemEditor {
             close()
         }
     }
-
-    // CUSTOM SURVEY: destination folder chooser for exporting one .plan per region.
-    QGCFileDialog {
-        id:             regionFolderDialog
-        folder:         QGroundControl.settingsManager.appSettings.missionSavePath
-        title:          qsTr("Select Output Folder For Region Plans")
-        selectFolder:   true
-
-        onAcceptedForLoad: (folder) => {
-            customSurveyManager.saveRegionPlans(missionItem, folder)
-            mainWindow.showMessageDialog(qsTr("Custom Survey"), customSurveyManager.lastError)
-            _refreshCustomRegions()
-            close()
-        }
-    }
 }
+
+// ============================================================
+// PATCH TODO
+//
+// Migrate UI to QObject*-based runtime identity.
+//
+// regionCountForSurvey(missionItem)
+//
+// should become the single source of truth.
+//
+// After PATCH D:
+//
+// remove any compatibility logic.
+//
+// ============================================================
+

@@ -1,3 +1,11 @@
+
+/*
+ * Plugin initialization.
+ *
+ * Creates the custom plugin objects, registers QML,
+ * and installs runtime customizations.
+ */
+
 /****************************************************************************
  *
  * (c) 2009-2019 QGROUNDCONTROL PROJECT <http://www.qgroundcontrol.org>
@@ -79,6 +87,7 @@ bool CustomOptions::wifiReliableForCalibration(void) const
 CustomPlugin::CustomPlugin(QObject *parent)
     : QGCCorePlugin(parent)
     , _options(new CustomOptions(this, this))
+    , _customSurveyManager(new CustomSurveyManager(this))
 {
     _showAdvancedUI = false;
     _customSurveyManager = new CustomSurveyManager(this);
@@ -367,6 +376,7 @@ QQmlApplicationEngine* CustomPlugin::createQmlApplicationEngine(QObject* parent)
 {
     _qmlEngine = QGCCorePlugin::createQmlApplicationEngine(parent);
     _qmlEngine->addImportPath("qrc:/Custom/Widgets");
+    _qmlEngine->rootContext()->setContextProperty(QStringLiteral("customSurveyManager"), _customSurveyManager);
     // TODO: Investigate _qmlEngine->setExtraSelectors({"custom"})
 
     // Expose the custom survey manager to the overridden Plan-view QML.
@@ -378,22 +388,24 @@ QQmlApplicationEngine* CustomPlugin::createQmlApplicationEngine(QObject* parent)
     return _qmlEngine;
 }
 
-QStringList CustomPlugin::complexMissionItemNames(Vehicle *vehicle, const QStringList &complexMissionItemNames)
+QStringList CustomPlugin::complexMissionItemNames(Vehicle* vehicle, const QStringList& complexMissionItemNames)
 {
-    QStringList names = QGCCorePlugin::complexMissionItemNames(vehicle, complexMissionItemNames);
-    const QString customName = _customSurveyManager->customSurveyName();
-    if (!names.contains(customName)) {
-        names.append(customName);
+    Q_UNUSED(vehicle);
+
+    QStringList names = complexMissionItemNames;
+    if (!names.contains(_customSurveyManager->customSurveyName())) {
+        names.append(_customSurveyManager->customSurveyName());
     }
+
     return names;
 }
 
-void CustomPlugin::postSaveToMissionJson(PlanMasterController *pController, QJsonObject &missionJson)
+void CustomPlugin::postSaveToMissionJson(PlanMasterController* pController, QJsonObject& missionJson)
 {
     _customSurveyManager->decorateMissionJson(pController, missionJson);
 }
 
-void CustomPlugin::postLoadFromJson(PlanMasterController *pController, QJsonObject &json)
+void CustomPlugin::postLoadFromJson(PlanMasterController* pController, QJsonObject& json)
 {
     _customSurveyManager->restoreFromPlanJson(pController, json);
 }
@@ -428,5 +440,13 @@ QUrl CustomOverrideInterceptor::intercept(const QUrl &url, QQmlAbstractUrlInterc
         break;
     }
 
-    return url;
+    
+qDebug() << "INTERCEPT:" << url;
+
+if (url.toString().contains("SurveyItemEditor.qml")) {
+    qDebug() << "Redirecting SurveyItemEditor";
+}
+
+return url;
+
 }

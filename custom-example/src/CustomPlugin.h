@@ -1,3 +1,11 @@
+
+/*
+ * Plugin entry point.
+ *
+ * Registers all custom QGroundControl functionality,
+ * QML overrides, and the CustomSurveyManager singleton.
+ */
+
 /****************************************************************************
  *
  * (c) 2009-2019 QGROUNDCONTROL PROJECT <http://www.qgroundcontrol.org>
@@ -21,6 +29,7 @@ class CustomOptions;
 class CustomPlugin;
 class CustomSettings;
 class CustomSurveyManager;
+class QJsonObject;
 class QQmlApplicationEngine;
 
 Q_DECLARE_LOGGING_CATEGORY(CustomLog)
@@ -73,6 +82,9 @@ public:
     bool                    adjustSettingMetaData           (const QString& settingsGroup, FactMetaData& metaData) final;
     void                    paletteOverride                 (const QString &colorName, QGCPalette::PaletteColorInfo_t& colorInfo) final;
     QQmlApplicationEngine*  createQmlApplicationEngine      (QObject* parent) final;
+    QStringList             complexMissionItemNames         (Vehicle* vehicle, const QStringList& complexMissionItemNames) final;
+    void                    postSaveToMissionJson           (PlanMasterController* pController, QJsonObject& missionJson) final;
+    void                    postLoadFromJson                (PlanMasterController* pController, QJsonObject& json) final;
 
     // Custom Survey plugin hooks. A custom survey is a stock SurveyComplexItem
     // managed by _customSurveyManager; these route core hooks to it.
@@ -89,6 +101,7 @@ private:
 private:
     CustomOptions*  _options = nullptr;
     QQmlApplicationEngine *_qmlEngine = nullptr;
+    CustomSurveyManager* _customSurveyManager = nullptr;
     class CustomOverrideInterceptor *_selector = nullptr;
     QVariantList    _customSettingsList; // Not to be mixed up with QGCCorePlugin implementation
     CustomSurveyManager* _customSurveyManager = nullptr;

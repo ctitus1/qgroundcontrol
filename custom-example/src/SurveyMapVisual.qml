@@ -8,18 +8,12 @@
  ****************************************************************************/
 
 /*
- * CUSTOM PLUGIN OVERRIDE of src/QmlControls/SurveyMapVisual.qml.
+ * Map visualization for custom surveys.
  *
- * Core is simply `TransectStyleMapVisuals { polygonInteractive: true }`. This
- * wrapper keeps those stock visuals (polygon tracing + vertex drag handles +
- * transects) and, for surveys flagged as custom, additionally draws:
- *   - colored sub-region overlays computed live from the control points
- *   - draggable control-point handles (one center + one per region)
- *
- * A plain (non-custom) survey renders exactly like core. `object` (the mission
- * item) is inherited from the QML context set up by MissionItemMapVisual, so
- * the inner TransectStyleMapVisuals must NOT have `object` set explicitly.
+ * Draws generated survey regions and keeps the map
+ * synchronized with the current survey.
  */
+
 
 import QtQuick
 import QtQuick.Controls
@@ -32,317 +26,93 @@ import QGroundControl.Palette
 import QGroundControl.Controls
 import QGroundControl.FlightMap
 
+/// Survey Complex Mission Item visuals
 Item {
     id: _root
 
     property var    map
     property bool   polygonInteractive: true
-    property bool   interactive:        true
+    property bool   interactive: true
     property var    vehicle
 
-    property var    _missionItem:   object
-    property var    _regions:       []
-    property int    _controlCount:  0
-    property var    _handles:       []      ///< live control-point indicator objects
-    property var    _regionItems:   []      ///< live region-overlay MapPolygons (reused, not recreated per frame)
-    property var    _flightItems:   []      ///< live per-region flight-path MapPolylines (reused)
-    property bool   _dragging:      false   ///< true while a control point is being dragged by the mouse
-    property bool   _divided:       false   ///< true when showing region visuals instead of the master grid
+    property var    _missionItem: object
+    property var    _regions: []
 
     signal clicked(int sequenceNumber)
 
-    function _shouldShow() {
-        return _missionItem && customSurveyManager.isCustomSurvey(_missionItem) && _missionItem.isCurrentItem
+    function _refreshRegions() {
+        customSurveyManager.regionCountForSurvey(_missionItem)
+
+        _regions = customSurveyManager.isCustomSurvey(_missionItem) ? customSurveyManager.regionPolygons(_missionItem) : []
+        _rebuildRegionVisuals()
     }
 
-    // Recompute regions + transects, and (re)build handles when the count
-    // changes. This is the full-recompute path: it runs for control-vertex mouse
-    // drags (the division reshapes → grids must rebuild live), survey reshapes,
-    // panel edits, etc. A whole-survey TRANSLATION does NOT come here — it is a
-    // rigid shift handled by _translateVisuals via onCustomSurveyTranslated.
-    function _sync() {
-        var show = _shouldShow()
-
-        _regions = show ? customSurveyManager.regionPolygons(_missionItem) : []
-        _syncRegionVisuals(show)
-
-        var count = show ? customSurveyManager.edgeControlPoints(_missionItem).length : 0
-        _divided = show && count >= 2
-        if (count !== _controlCount) {
-            _controlCount = count
-            _rebuildControlVisuals(show)
-        } else if (!_dragging) {
-            // Count is unchanged but positions may have moved. Nudge the existing
-            // handles to follow — but never while the user is actively dragging
-            // one (that handle tracks the cursor via its own drag handler).
-            _updateHandlePositions()
-        }
-
-        _syncFlightPaths()
-    }
-
-    // Reuse a pool of MapPolyline objects: grow/shrink only when the region
-    // count changes, otherwise just update each polyline's points. Destroying
-    // and recreating QtLocation map items every frame is what made this laggy.
-    function _syncFlightPaths() {
-        if (!map) {
+    function _rebuildRegionVisuals() {
+        regionObjMgr.destroyObjects()
+        if (!_missionItem || !_missionItem.isCurrentItem || _regions.length === 0) {
             return
         }
-        var paths = _shouldShow() ? customSurveyManager.regionFlightPaths(_missionItem) : []
-        while (_flightItems.length > paths.length) {
-            var drop = _flightItems.pop()
-            if (drop) { map.removeMapItem(drop); drop.destroy() }
-        }
-        while (_flightItems.length < paths.length) {
-            var add = flightPathComponent.createObject(map, { "regionIndex": _flightItems.length })
-            if (add) { map.addMapItem(add); _flightItems.push(add) }
-        }
-        for (var i = 0; i < paths.length; i++) {
-            _flightItems[i].regionIndex = i
-            _flightItems[i].pathPoints  = (paths[i] && paths[i].length >= 2) ? paths[i] : []
-        }
-    }
 
-    // Same pooling approach for the colored region-fill overlays.
-    function _syncRegionVisuals(show) {
-        if (!map) {
-            return
-        }
-        var regions = show ? _regions : []
-        while (_regionItems.length > regions.length) {
-            var drop = _regionItems.pop()
-            if (drop) { map.removeMapItem(drop); drop.destroy() }
-        }
-        while (_regionItems.length < regions.length) {
-            var add = regionComponent.createObject(map, { "regionIndex": _regionItems.length })
-            if (add) { map.addMapItem(add); _regionItems.push(add) }
-        }
-        for (var i = 0; i < regions.length; i++) {
-            _regionItems[i].regionIndex = i
-            _regionItems[i].regionPath  = regions[i].polygon
-        }
-    }
-
-    // Rigidly shift every region outline and transect polyline by (distance,
-    // azimuth) — used while the whole survey is translated so the lines follow
-    // without the cost of regenerating each region's grid.
-    function _translateVisuals(distance, azimuth) {
-        for (var i = 0; i < _regionItems.length; i++) {
-            if (_regionItems[i]) {
-                _regionItems[i].regionPath = _translatePath(_regionItems[i].regionPath, distance, azimuth)
-            }
-        }
-        for (var j = 0; j < _flightItems.length; j++) {
-            if (_flightItems[j]) {
-                _flightItems[j].pathPoints = _translatePath(_flightItems[j].pathPoints, distance, azimuth)
+        for (var i = 0; i < _regions.length; i++) {
+            var region = _regions[i]
+            var obj = regionVisualComponent.createObject(map, {
+                "regionPath": region.polygon,
+                "regionIndex": i
+            })
+            if (obj) {
+                regionObjMgr.addObject(obj, map)
             }
         }
     }
 
-    function _translatePath(points, distance, azimuth) {
-        var out = []
-        for (var k = 0; k < points.length; k++) {
-            // distanceUp defaults to 0, so altitudes are preserved.
-            out.push(points[k].atDistanceAndAzimuth(distance, azimuth))
-        }
-        return out
-    }
-
-    function _rebuildControlVisuals(show) {
-        controlObjMgr.destroyObjects()
-        _handles = []
-        if (!show || _controlCount < 2) {
-            return
-        }
-        _createHandle(-1, customSurveyManager.centerControlPoint(_missionItem))
-        var edges = customSurveyManager.edgeControlPoints(_missionItem)
-        for (var i = 0; i < edges.length; i++) {
-            _createHandle(i, edges[i])
-        }
-    }
-
-    function _createHandle(pointIndex, coordinate) {
-        // The indicator is a MapQuickItem -> add it to the map (addObject with a
-        // mapControl arg calls map.addMapItem for us).
-        var indicator = handleIndicatorComponent.createObject(map, { "coordinate": coordinate, "pointIndex": pointIndex })
-        if (!indicator) {
-            return
-        }
-        controlObjMgr.addObject(indicator, map)
-        _handles.push(indicator)
-
-        // The dragger is a plain Item overlay (NOT a map item), parented to the
-        // map and positioned in screen space. Track it for cleanup, but do NOT
-        // pass it to addMapItem (that throws "incompatible arguments").
-        var dragger = handleDragComponent.createObject(map, {
-            "mapControl":       map,
-            "itemIndicator":    indicator,
-            "itemCoordinate":   coordinate,
-            "pointIndex":       pointIndex,
-            // Keep the center dragger BELOW the survey's own center-drag handle
-            // (zOrderMapItems + 1) so grabbing the middle moves the whole survey
-            // (control points follow); the larger center ring around it stays
-            // grabbable to move just the division center.
-            "z":                (pointIndex < 0 ? QGroundControl.zOrderMapItems : (QGroundControl.zOrderMapItems + 1))
-        })
-        if (dragger) {
-            controlObjMgr.addObject(dragger)
-        }
-    }
-
-    // Move existing handle markers to the manager's current control-point
-    // positions without recreating them (keeps a move smooth, no flicker).
-    function _updateHandlePositions() {
-        if (_handles.length === 0) {
-            return
-        }
-        var center = customSurveyManager.centerControlPoint(_missionItem)
-        var edges  = customSurveyManager.edgeControlPoints(_missionItem)
-        for (var i = 0; i < _handles.length; i++) {
-            var handle = _handles[i]
-            if (!handle) {
-                continue
-            }
-            if (handle.pointIndex < 0) {
-                handle.coordinate = center
-            } else if (handle.pointIndex < edges.length) {
-                handle.coordinate = edges[handle.pointIndex]
-            }
-        }
-    }
-
-    function _destroyPool(pool) {
-        // If the map is already gone these items (parented to it) go with it.
-        if (!map) {
-            return
-        }
-        for (var i = 0; i < pool.length; i++) {
-            if (pool[i]) { map.removeMapItem(pool[i]); pool[i].destroy() }
-        }
-    }
-
-    Component.onCompleted:   _sync()
-    Component.onDestruction: {
-        _destroyPool(_regionItems); _regionItems = []
-        _destroyPool(_flightItems); _flightItems = []
-        controlObjMgr.destroyObjects()
-        _handles = []
-    }
+    Component.onCompleted: _refreshRegions()
+    Component.onDestruction: regionObjMgr.destroyObjects()
 
     Connections {
-        target: _missionItem ? _missionItem.surveyAreaPolygon : null
-        // Any polygon edit EXCEPT a rigid whole-survey translation recomputes.
-        // During a center-drag translation the manager instead emits
-        // customSurveyTranslated (handled below), so we skip the recompute here
-        // to avoid regenerating every grid every frame.
+        target: _missionItem.surveyAreaPolygon
+
         function onPathChanged() {
-            if (!_missionItem.surveyAreaPolygon.centerDrag) {
-                _sync()
-            }
-        }
-        // On release of a whole-survey move, recompute the exact grids (the live
-        // translation is a rigid shift and can drift by sub-pixel amounts).
-        function onCenterDragChanged() {
-            if (_missionItem && _missionItem.surveyAreaPolygon && !_missionItem.surveyAreaPolygon.centerDrag) {
-                _sync()
-            }
+            _refreshRegions()
         }
     }
 
     Connections {
         target: _missionItem
-        function onIsCurrentItemChanged() { _sync() }
-        // Panel edits (grid angle, altitude, spacing, turnaround, ...) rebuild
-        // the master's transects and fire this; refresh the per-region grids too,
-        // live (e.g. while the angle slider is dragged). Skipped only during a
-        // rigid whole-survey translation, which shifts the lines instead.
-        function onVisualTransectPointsChanged() {
-            if (!_missionItem.surveyAreaPolygon.centerDrag) {
-                _syncFlightPaths()
-            }
+
+        function onIsCurrentItemChanged() {
+            _rebuildRegionVisuals()
         }
     }
 
     Connections {
         target: customSurveyManager
-        // A control vertex (or the center) was moved by the mouse, the region
-        // count/offset changed, etc. → the division reshapes, so recompute live.
+
         function onCustomSurveyChanged(item) {
             if (item === _missionItem) {
-                _sync()
-            }
-        }
-        // The whole survey was translated (center-handle drag): the division is
-        // rigid, so shift the already-built outlines + transects by the delta
-        // rather than recomputing. Handles follow the (already translated)
-        // control points.
-        function onCustomSurveyTranslated(item, distance, azimuth) {
-            if (item === _missionItem) {
-                _translateVisuals(distance, azimuth)
-                _updateHandlePositions()
+                _refreshRegions()
             }
         }
     }
 
-    // Not divided: stock survey visuals (polygon + white transect grid + click
-    // to select). `object` comes from context. Also used whenever the item is
-    // not current, so click-to-select still works.
-    Loader {
-        active: !_root._divided
-        sourceComponent: Component {
-            TransectStyleMapVisuals {
-                map:                _root.map
-                polygonInteractive: _root.polygonInteractive
-                interactive:        _root.interactive
-                vehicle:            _root.vehicle
-                opacity:            _root.opacity
-                onClicked:          (sequenceNumber) => _root.clicked(sequenceNumber)
-            }
-        }
+    TransectStyleMapVisuals {
+        map:                _root.map
+        polygonInteractive: true
+        interactive:        _root.interactive
+        vehicle:            _root.vehicle
+        opacity:            _root.opacity
+
+        onClicked: (sequenceNumber) => _root.clicked(sequenceNumber)
     }
 
-    // Divided: only the editable survey-area polygon (no white transect grid) —
-    // the per-region colored paths replace it.
-    Loader {
-        active: _root._divided
-        sourceComponent: Component {
-            QGCMapPolygonVisuals {
-                mapControl:         _root.map
-                mapPolygon:         _root._missionItem.surveyAreaPolygon
-                interactive:        _root.polygonInteractive && _root._missionItem.isCurrentItem && _root.interactive
-                borderWidth:        1
-                borderColor:        "black"
-                interiorColor:      QGroundControl.globalPalette.surveyPolygonInterior
-                altColor:           QGroundControl.globalPalette.surveyPolygonTerrainCollision
-                interiorOpacity:    0.5 * _root.opacity
-            }
-        }
+    QGCDynamicObjectManager {
+        id: regionObjMgr
     }
 
-    QGCDynamicObjectManager { id: controlObjMgr }
-
-    // One region's transect flight path.
     Component {
-        id: flightPathComponent
-
-        MapPolyline {
-            property var pathPoints:  []
-            property int regionIndex: 0
-
-            path:       pathPoints
-            line.color: ["#2F80ED", "#27AE60", "#F2994A", "#EB5757"][regionIndex % 4]
-            line.width: 3
-            opacity:    _root.opacity
-            z:          QGroundControl.zOrderMapItems + 3
-        }
-    }
-
-    // Colored, semi-transparent fill for each sub-region.
-    Component {
-        id: regionComponent
+        id: regionVisualComponent
 
         MapPolygon {
-            property var regionPath:  []
+            property var regionPath: []
             property int regionIndex: 0
 
             path:           regionPath
@@ -350,81 +120,21 @@ Item {
             border.color:   ["#2F80ED", "#27AE60", "#F2994A", "#EB5757"][regionIndex % 4]
             border.width:   2
             opacity:        _root.opacity
+            visible:        _missionItem.isCurrentItem && customSurveyManager.isCustomSurvey(_missionItem)
             z:              QGroundControl.zOrderMapItems + 1
         }
     }
-
-    // Draggable marker for a control point. pointIndex == -1 is the center.
-    Component {
-        id: handleIndicatorComponent
-
-        MapQuickItem {
-            id:             handleIndicator
-            z:              QGroundControl.zOrderMapItems + 2
-
-            property int  pointIndex: -1
-            // Stable size drives BOTH the anchor and the marker. Binding
-            // anchorPoint to sourceItem.width/height instead creates a
-            // MapQuickItem polish() loop (freeze/crash). The center is larger so
-            // its ring stays grabbable behind the survey centroid marker
-            // (z + 2, below the survey marker's z + 3).
-            property real markerSize: ScreenTools.defaultFontPixelHeight * (pointIndex < 0 ? 2.5 : 1.1)
-
-            anchorPoint.x:  markerSize / 2
-            anchorPoint.y:  markerSize / 2
-
-            sourceItem: Rectangle {
-                width:          handleIndicator.markerSize
-                height:         handleIndicator.markerSize
-                radius:         handleIndicator.markerSize / 2
-                color:          handleIndicator.pointIndex < 0 ? "#F2C94C" : "#2F80ED"
-                border.color:   "white"
-                border.width:   2
-            }
-        }
-    }
-
-    Component {
-        id: handleDragComponent
-
-        MissionItemIndicatorDrag {
-            property int  pointIndex: -1
-            // Only mutate manager state while a drag is genuinely in progress.
-            // itemCoordinate also changes at creation (initial property) and on
-            // map pan; acting on those wrongly ran the center branch (pointIndex
-            // still -1 at creation) and overwrote the center with an edge point.
-            property bool _dragActive: false
-
-            onDragStart: { _dragActive = true; _root._dragging = true }
-            // On release, snap the (edge) handles back onto their ray midpoints.
-            // The grids already updated live during the drag; a final _sync
-            // reconciles the snapped handle positions.
-            onDragStop: {
-                _dragActive = false
-                _root._dragging = false
-                _root._updateHandlePositions()
-                _root._sync()
-            }
-
-            onItemCoordinateChanged: {
-                if (!_dragActive) {
-                    return
-                }
-                // Store the drag. The center moves freely; an edge handle sets
-                // its ray's bearing from the center (the manager re-derives the
-                // boundary cut), so regions update live. The marker follows the
-                // cursor during the drag and snaps back onto its ray midpoint on
-                // release (see onDragStop) — re-deriving the snapped point every
-                // frame here caused a geo<->screen feedback / polish loop.
-                if (pointIndex < 0) {
-                    customSurveyManager.setCenterControlPoint(_root._missionItem, itemCoordinate)
-                } else {
-                    customSurveyManager.setEdgeControlPoint(_root._missionItem, pointIndex, itemCoordinate)
-                }
-                if (itemIndicator) {
-                    itemIndicator.coordinate = itemCoordinate
-                }
-            }
-        }
-    }
 }
+
+
+// ============================================================
+// PATCH TODO
+//
+// Verify all region rendering comes from
+//
+//      regionPolygons(missionItem)
+//
+// and never from compatibility state.
+//
+// ============================================================
+

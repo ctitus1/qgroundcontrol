@@ -72,10 +72,6 @@ set(CUSTOM_SOURCES
     ${CMAKE_CURRENT_SOURCE_DIR}/src/CustomPlugin.h
     ${CMAKE_CURRENT_SOURCE_DIR}/src/CustomSurveyManager.cc
     ${CMAKE_CURRENT_SOURCE_DIR}/src/CustomSurveyManager.h
-    ${CMAKE_CURRENT_SOURCE_DIR}/src/Splitters/RegionSplitter.h
-    ${CMAKE_CURRENT_SOURCE_DIR}/src/Splitters/ControlPointSplitter.cc
-    ${CMAKE_CURRENT_SOURCE_DIR}/src/Splitters/ControlPointSplitter.h
-    ${CMAKE_CURRENT_SOURCE_DIR}/src/Splitters/ActiveSplitter.h
     ${CMAKE_CURRENT_SOURCE_DIR}/src/AutoPilotPlugin/CustomAutoPilotPlugin.cc
     ${CMAKE_CURRENT_SOURCE_DIR}/src/AutoPilotPlugin/CustomAutoPilotPlugin.h
     ${CMAKE_CURRENT_SOURCE_DIR}/src/FirmwarePlugin/CustomFirmwarePlugin.cc
@@ -95,8 +91,6 @@ set(CUSTOM_INCLUDE_DIRECTORIES
     ${CMAKE_CURRENT_SOURCE_DIR}/src/Splitters
     ${CMAKE_CURRENT_SOURCE_DIR}/src/AutoPilotPlugin
     ${CMAKE_CURRENT_SOURCE_DIR}/src/FirmwarePlugin
-    # Core dirs the survey manager/splitter pull headers from (redundant if the
-    # main target already exposes them, but harmless and explicit).
     ${CMAKE_SOURCE_DIR}/src/MissionManager
     ${CMAKE_SOURCE_DIR}/src/QmlControls
     ${CMAKE_SOURCE_DIR}/src/Utilities
