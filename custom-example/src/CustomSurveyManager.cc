@@ -24,8 +24,10 @@
 #include <QtCore/QJsonArray>
 #include <QtCore/QJsonDocument>
 #include <QtCore/QPointF>
+#include <QtCore/QDebug>
 
 #include <cmath>
+#include <limits>
 
 CustomSurveyManager::CustomSurveyManager(QObject* parent)
     : QObject(parent)
@@ -60,6 +62,102 @@ int CustomSurveyManager::_sequenceNumber(QObject* item) const
         return visual->sequenceNumber();
     }
     return -1;
+}
+
+//=============================================================================
+// Boundary <-> perimeter-fraction helpers
+//=============================================================================
+
+QGeoCoordinate CustomSurveyManager::_boundaryCoordinate(const QList<QGeoCoordinate>& polygon, double param)
+{
+    const int n = polygon.size();
+    if (n == 0) {
+        return QGeoCoordinate();
+    }
+    if (n < 2) {
+        return polygon.first();
+    }
+
+    QList<double> segLength;
+    segLength.reserve(n);
+    double total = 0.0;
+    for (int i = 0; i < n; ++i) {
+        const double length = polygon[i].distanceTo(polygon[(i + 1) % n]);
+        segLength.append(length);
+        total += length;
+    }
+    if (total <= 0.0) {
+        return polygon.first();
+    }
+
+    double fraction = param - std::floor(param);   // wrap into [0,1)
+    double target = fraction * total;
+    for (int i = 0; i < n; ++i) {
+        if (target <= segLength[i] || i == n - 1) {
+            const QGeoCoordinate& a = polygon[i];
+            const QGeoCoordinate& b = polygon[(i + 1) % n];
+            if (segLength[i] <= 0.0) {
+                return a;
+            }
+            return a.atDistanceAndAzimuth(qMin(target, segLength[i]), a.azimuthTo(b));
+        }
+        target -= segLength[i];
+    }
+    return polygon.first();
+}
+
+double CustomSurveyManager::_boundaryParam(const QList<QGeoCoordinate>& polygon, const QGeoCoordinate& coordinate)
+{
+    const int n = polygon.size();
+    if (n < 2) {
+        return 0.0;
+    }
+
+    const QGeoCoordinate origin = polygon.first();
+    auto toLocal = [&origin](const QGeoCoordinate& c) {
+        double north, east, down;
+        QGCGeo::convertGeoToNed(c, origin, north, east, down);
+        return QPointF(east, north);
+    };
+
+    QList<QPointF> local;
+    local.reserve(n);
+    for (const QGeoCoordinate& c : polygon) {
+        local.append(toLocal(c));
+    }
+    const QPointF point = toLocal(coordinate);
+
+    QList<double> segLength;
+    segLength.reserve(n);
+    double total = 0.0;
+    for (int i = 0; i < n; ++i) {
+        const QPointF d = local[(i + 1) % n] - local[i];
+        const double length = std::hypot(d.x(), d.y());
+        segLength.append(length);
+        total += length;
+    }
+    if (total <= 0.0) {
+        return 0.0;
+    }
+
+    double bestDistance = std::numeric_limits<double>::max();
+    double bestPerim = 0.0;
+    double cumulative = 0.0;
+    for (int i = 0; i < n; ++i) {
+        const QPointF a = local[i];
+        const QPointF ab = local[(i + 1) % n] - a;
+        const double len2 = (ab.x() * ab.x()) + (ab.y() * ab.y());
+        double t = (len2 > 0.0) ? (((point.x() - a.x()) * ab.x()) + ((point.y() - a.y()) * ab.y())) / len2 : 0.0;
+        t = qBound(0.0, t, 1.0);
+        const QPointF proj(a.x() + (t * ab.x()), a.y() + (t * ab.y()));
+        const double distance = std::hypot(point.x() - proj.x(), point.y() - proj.y());
+        if (distance < bestDistance) {
+            bestDistance = distance;
+            bestPerim = cumulative + (t * segLength[i]);
+        }
+        cumulative += segLength[i];
+    }
+    return bestPerim / total;
 }
 
 //=============================================================================
@@ -111,7 +209,8 @@ bool CustomSurveyManager::_markCustomSurvey(QObject* item, bool setDirty)
         // Follow whole-survey moves. When the survey polygon is translated (its
         // center is dragged), QGCMapPolygon shifts every vertex by the same
         // geodesic delta and emits centerChanged; we mirror that shift onto the
-        // control points so the division travels with the survey.
+        // interior center control point (edge cuts are perimeter fractions and
+        // follow the boundary on their own).
         if (QGCMapPolygon* polygon = survey->surveyAreaPolygon()) {
             _stateBySurvey[survey].lastPolygonCenter = polygon->center();
             connect(polygon, &QGCMapPolygon::centerChanged, this, [this, survey]() {
@@ -157,17 +256,14 @@ void CustomSurveyManager::_onSurveyPolygonMoved(QObject* survey)
         return;                 // first observation: nothing to translate against yet
     }
     const double distance = oldCenter.distanceTo(newCenter);
+    qWarning() << "CSDBG _onSurveyPolygonMoved old=" << oldCenter << "new=" << newCenter << "dist=" << distance << "center=" << state.center;
     if (distance < 0.01) {
         return;                 // negligible movement
     }
-    const double azimuth = oldCenter.azimuthTo(newCenter);
 
     // Same rigid geodesic translation QGCMapPolygon applies to its vertices.
     if (state.center.isValid()) {
-        state.center = state.center.atDistanceAndAzimuth(distance, azimuth);
-    }
-    for (int i = 0; i < state.edgePoints.size(); ++i) {
-        state.edgePoints[i] = state.edgePoints[i].atDistanceAndAzimuth(distance, azimuth);
+        state.center = state.center.atDistanceAndAzimuth(distance, oldCenter.azimuthTo(newCenter));
     }
 
     emit customSurveyChanged(survey);
@@ -183,41 +279,19 @@ void CustomSurveyManager::_seedControlPoints(QObject* item, ControlState& state,
     if (!survey) {
         return;
     }
-    const QList<QGeoCoordinate> polygon = survey->surveyAreaPolygon()->coordinateList();
-    if (polygon.size() < 3) {
+    if (survey->surveyAreaPolygon()->coordinateList().size() < 3) {
         return;
     }
 
-    const QGeoCoordinate origin = polygon.first();
-
-    QGeoCoordinate centerGeo = state.center.isValid() ? state.center : survey->surveyAreaPolygon()->center();
-    if (!centerGeo.isValid()) {
-        centerGeo = origin;
+    if (!state.center.isValid()) {
+        state.center = survey->surveyAreaPolygon()->center();
     }
+    qWarning() << "CSDBG _seedControlPoints count=" << count << "center=" << state.center;
 
-    double cn, ce, cd;
-    QGCGeo::convertGeoToNed(centerGeo, origin, cn, ce, cd);
-    const QPointF center(ce, cn);
-
-    double radius = 0.0;
-    for (const QGeoCoordinate& c : polygon) {
-        double n, e, d;
-        QGCGeo::convertGeoToNed(c, origin, n, e, d);
-        radius = std::max(radius, std::hypot(e - center.x(), n - center.y()));
-    }
-    if (radius < 1.0) {
-        radius = 1.0;
-    }
-
-    state.center = centerGeo;
-    state.edgePoints.clear();
+    // Distribute the boundary cuts evenly around the perimeter.
+    state.edgeParams.clear();
     for (int i = 0; i < count; ++i) {
-        const double angle = (2.0 * M_PI * i) / static_cast<double>(count);
-        const double east  = center.x() + (0.6 * radius * std::cos(angle));
-        const double north = center.y() + (0.6 * radius * std::sin(angle));
-        QGeoCoordinate edge;
-        QGCGeo::convertNedToGeo(north, east, 0.0, origin, edge);
-        state.edgePoints.append(edge);
+        state.edgeParams.append(static_cast<double>(i) / static_cast<double>(count));
     }
     state.regionCount = count;
     state.seeded = true;
@@ -241,7 +315,7 @@ void CustomSurveyManager::setRegionCount(QObject* item, int count)
     ControlState& state = _stateFor(item);
     state.regionCount = count;
     if (count < 2) {
-        state.edgePoints.clear();
+        state.edgeParams.clear();
         state.seeded = true;   // undivided: nothing to seed
     } else {
         _seedControlPoints(item, state, count);
@@ -254,34 +328,40 @@ void CustomSurveyManager::setRegionCount(QObject* item, int count)
 
 QGeoCoordinate CustomSurveyManager::centerControlPoint(QObject* item)
 {
-    if (!_surveyItem(item)) {
+    SurveyComplexItem* survey = _surveyItem(item);
+    if (!survey) {
         return QGeoCoordinate();
     }
     ControlState& state = _stateFor(item);
     if (!state.center.isValid()) {
-        state.center = _surveyItem(item)->surveyAreaPolygon()->center();
+        state.center = survey->surveyAreaPolygon()->center();
     }
+    qWarning() << "CSDBG centerControlPoint ->" << state.center
+               << "inside=" << survey->surveyAreaPolygon()->containsCoordinate(state.center);
     return state.center;
 }
 
 QVariantList CustomSurveyManager::edgeControlPoints(QObject* item)
 {
     QVariantList out;
-    if (!_surveyItem(item)) {
+    SurveyComplexItem* survey = _surveyItem(item);
+    if (!survey) {
         return out;
     }
     ControlState& state = _stateFor(item);
-    if (state.regionCount >= 2 && (!state.seeded || state.edgePoints.size() != state.regionCount)) {
+    if (state.regionCount >= 2 && (!state.seeded || state.edgeParams.size() != state.regionCount)) {
         _seedControlPoints(item, state, state.regionCount);
     }
-    for (const QGeoCoordinate& c : std::as_const(state.edgePoints)) {
-        out << QVariant::fromValue(c);
+    const QList<QGeoCoordinate> polygon = survey->surveyAreaPolygon()->coordinateList();
+    for (const double param : std::as_const(state.edgeParams)) {
+        out << QVariant::fromValue(_boundaryCoordinate(polygon, param));
     }
     return out;
 }
 
 void CustomSurveyManager::setCenterControlPoint(QObject* item, const QGeoCoordinate& coordinate)
 {
+    qWarning() << "CSDBG setCenterControlPoint coord=" << coordinate << "valid=" << coordinate.isValid();
     if (!_surveyItem(item) || !coordinate.isValid()) {
         return;
     }
@@ -296,14 +376,22 @@ void CustomSurveyManager::setCenterControlPoint(QObject* item, const QGeoCoordin
 
 void CustomSurveyManager::setEdgeControlPoint(QObject* item, int index, const QGeoCoordinate& coordinate)
 {
-    if (!_surveyItem(item) || !coordinate.isValid()) {
+    qWarning() << "CSDBG setEdgeControlPoint idx=" << index << "coord=" << coordinate;
+    SurveyComplexItem* survey = _surveyItem(item);
+    if (!survey || !coordinate.isValid()) {
         return;
     }
     ControlState& state = _stateFor(item);
-    if (index < 0 || index >= state.edgePoints.size()) {
+    if (index < 0 || index >= state.edgeParams.size()) {
         return;
     }
-    state.edgePoints[index] = coordinate;
+    const QList<QGeoCoordinate> polygon = survey->surveyAreaPolygon()->coordinateList();
+    if (polygon.size() < 3) {
+        return;
+    }
+    // Constrain the cut to the survey boundary: store where the dragged point
+    // projects onto the perimeter.
+    state.edgeParams[index] = _boundaryParam(polygon, coordinate);
     state.seeded = true;
     if (PlanMasterController* controller = _itemController(item)) {
         controller->setDirty(true);
@@ -338,14 +426,16 @@ QList<SplitRegion> CustomSurveyManager::_computeRegions(QObject* item, QString& 
         return { whole };
     }
 
-    if (!state.seeded || state.edgePoints.size() != state.regionCount) {
+    if (!state.seeded || state.edgeParams.size() != state.regionCount) {
         _seedControlPoints(item, state, state.regionCount);
     }
 
     SplitInput input;
     input.masterPolygon = polygon;
-    input.center        = state.center;
-    input.edgePoints    = state.edgePoints;
+    input.center        = state.center.isValid() ? state.center : survey->surveyAreaPolygon()->center();
+    for (const double param : std::as_const(state.edgeParams)) {
+        input.edgePoints.append(_boundaryCoordinate(polygon, param));
+    }
 
     return _splitter.split(input, errorString);
 }
@@ -469,7 +559,7 @@ bool CustomSurveyManager::saveRegionPlans(QObject* item, const QString& folder)
 
         // Each exported region is a standalone, single-region custom survey.
         QJsonObject customSurvey;
-        customSurvey[QStringLiteral("version")]     = 2;
+        customSurvey[QStringLiteral("version")]     = 3;
         customSurvey[QStringLiteral("regionCount")] = 1;
         regionSurveyJson[QStringLiteral("customSurvey")] = customSurvey;
 
@@ -540,7 +630,7 @@ QJsonObject CustomSurveyManager::_metadataForItem(QObject* item)
     ControlState& state = _stateFor(item);
 
     QJsonObject obj;
-    obj[QStringLiteral("version")]        = 2;
+    obj[QStringLiteral("version")]        = 3;
     obj[QStringLiteral("regionCount")]    = state.regionCount;
     obj[QStringLiteral("sourceSequence")] = _sequenceNumber(item);
 
@@ -549,10 +639,12 @@ QJsonObject CustomSurveyManager::_metadataForItem(QObject* item)
         JsonHelper::saveGeoCoordinate(state.center, true /*writeAltitude*/, value);
         obj[QStringLiteral("center")] = value;
     }
-    if (!state.edgePoints.isEmpty()) {
-        QJsonValue value;
-        JsonHelper::saveGeoCoordinateArray(state.edgePoints, true /*writeAltitude*/, value);
-        obj[QStringLiteral("controlPoints")] = value;
+    if (!state.edgeParams.isEmpty()) {
+        QJsonArray params;
+        for (const double param : std::as_const(state.edgeParams)) {
+            params.append(param);
+        }
+        obj[QStringLiteral("edgeParams")] = params;
     }
     return obj;
 }
@@ -622,10 +714,11 @@ void CustomSurveyManager::restoreFromPlanJson(PlanMasterController* controller, 
             JsonHelper::loadGeoCoordinate(cs.value(QStringLiteral("center")), false, center, errorString);
             state.center = center;
         }
-        if (cs.contains(QStringLiteral("controlPoints"))) {
-            QList<QGeoCoordinate> points;
-            JsonHelper::loadGeoCoordinateArray(cs.value(QStringLiteral("controlPoints")), false, points, errorString);
-            state.edgePoints = points;
+        if (cs.contains(QStringLiteral("edgeParams"))) {
+            const QJsonArray params = cs.value(QStringLiteral("edgeParams")).toArray();
+            for (const QJsonValue& value : params) {
+                state.edgeParams.append(value.toDouble());
+            }
         }
         state.seeded = true;
         return state;

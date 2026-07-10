@@ -62,6 +62,7 @@ Item {
         _rebuildRegionVisuals(show)
 
         var count = show ? customSurveyManager.edgeControlPoints(_missionItem).length : 0
+        console.warn("CSQML _sync show", show, "count", count, "_controlCount", _controlCount, "_dragging", _dragging)
         if (count !== _controlCount) {
             _controlCount = count
             _rebuildControlVisuals(show)
@@ -100,14 +101,19 @@ Item {
     }
 
     function _createHandle(pointIndex, coordinate) {
+        console.warn("CSQML _createHandle idx", pointIndex, "coord", coordinate)
+        // The indicator is a MapQuickItem -> add it to the map (addObject with a
+        // mapControl arg calls map.addMapItem for us).
         var indicator = handleIndicatorComponent.createObject(map, { "coordinate": coordinate, "pointIndex": pointIndex })
         if (!indicator) {
             return
         }
-        map.addMapItem(indicator)
         controlObjMgr.addObject(indicator, map)
         _handles.push(indicator)
 
+        // The dragger is a plain Item overlay (NOT a map item), parented to the
+        // map and positioned in screen space. Track it for cleanup, but do NOT
+        // pass it to addMapItem (that throws "incompatible arguments").
         var dragger = handleDragComponent.createObject(map, {
             "mapControl":       map,
             "itemIndicator":    indicator,
@@ -115,7 +121,7 @@ Item {
             "pointIndex":       pointIndex
         })
         if (dragger) {
-            controlObjMgr.addObject(dragger, map)
+            controlObjMgr.addObject(dragger)
         }
     }
 
@@ -199,16 +205,21 @@ Item {
 
         MapQuickItem {
             id:             handleIndicator
-            anchorPoint.x:  sourceItem.width  / 2
-            anchorPoint.y:  sourceItem.height / 2
             z:              QGroundControl.zOrderMapItems + 2
 
-            property int pointIndex: -1
+            property int  pointIndex: -1
+            // Stable size drives BOTH the anchor and the marker. Binding
+            // anchorPoint to sourceItem.width/height instead creates a
+            // MapQuickItem polish() loop (freeze/crash).
+            property real markerSize: ScreenTools.defaultFontPixelHeight * (pointIndex < 0 ? 1.5 : 1.1)
+
+            anchorPoint.x:  markerSize / 2
+            anchorPoint.y:  markerSize / 2
 
             sourceItem: Rectangle {
-                width:          ScreenTools.defaultFontPixelHeight * (handleIndicator.pointIndex < 0 ? 1.5 : 1.1)
-                height:         width
-                radius:         width / 2
+                width:          handleIndicator.markerSize
+                height:         handleIndicator.markerSize
+                radius:         handleIndicator.markerSize / 2
                 color:          handleIndicator.pointIndex < 0 ? "#F2C94C" : "#2F80ED"
                 border.color:   "white"
                 border.width:   2
@@ -220,12 +231,33 @@ Item {
         id: handleDragComponent
 
         MissionItemIndicatorDrag {
-            property int pointIndex: -1
+            property int  pointIndex: -1
+            // Only mutate manager state while a drag is genuinely in progress.
+            // itemCoordinate also changes at creation (initial property) and on
+            // map pan; acting on those wrongly ran the center branch (pointIndex
+            // still -1 at creation) and overwrote the center with an edge point.
+            property bool _dragActive: false
 
-            onDragStart: _root._dragging = true
-            onDragStop:  _root._dragging = false
+            onDragStart: { console.warn("CSQML dragStart idx", pointIndex); _dragActive = true; _root._dragging = true }
+            // On release, snap the (edge) handles onto their boundary positions.
+            onDragStop: {
+                console.warn("CSQML dragStop idx", pointIndex)
+                _dragActive = false
+                _root._dragging = false
+                _root._updateHandlePositions()
+            }
 
             onItemCoordinateChanged: {
+                console.warn("CSQML onItemCoordinateChanged idx", pointIndex, "_dragActive", _dragActive, "coord", itemCoordinate)
+                if (!_dragActive) {
+                    return
+                }
+                // Store the drag. The center moves freely; edge cuts are
+                // projected onto the boundary by the manager (stored as a
+                // perimeter fraction) so regions update live. The marker follows
+                // the cursor during the drag and snaps to the edge on release
+                // (see onDragStop) — deriving the snapped point every frame here
+                // caused a geo<->screen feedback / polish loop.
                 if (pointIndex < 0) {
                     customSurveyManager.setCenterControlPoint(_root._missionItem, itemCoordinate)
                 } else {

@@ -22,13 +22,11 @@ namespace {
 
 constexpr double kEps = 1e-6;
 
-// 2D cross product (z component of a x b).
 inline double cross(const QPointF& a, const QPointF& b)
 {
     return (a.x() * b.y()) - (a.y() * b.x());
 }
 
-// Signed area of a planar polygon (positive == counter-clockwise).
 double signedArea(const QList<QPointF>& poly)
 {
     double area = 0.0;
@@ -48,7 +46,6 @@ void ensureCCW(QList<QPointF>& poly)
     }
 }
 
-// Even-odd point-in-polygon test in planar coordinates.
 bool pointInPolygon(const QList<QPointF>& poly, const QPointF& p)
 {
     bool inside = false;
@@ -67,60 +64,40 @@ bool pointInPolygon(const QList<QPointF>& poly, const QPointF& p)
     return inside;
 }
 
-// Intersect ray (origin C, direction d) with segment [A,B].
-// On success returns true and sets P (hit point) and tRay (distance param along d, >= 0).
-bool rayEdgeIntersect(const QPointF& C, const QPointF& d,
-                      const QPointF& A, const QPointF& B,
-                      QPointF& P, double& tRay)
-{
-    const QPointF ab = B - A;
-    const double denom = cross(d, ab);
-    if (std::abs(denom) < 1e-12) {
-        return false;   // ray parallel to edge
-    }
-    const QPointF ac = A - C;
-    const double t = cross(ac, ab) / denom;   // distance along ray
-    const double u = cross(ac, d)  / denom;   // position along edge [0,1]
-    if (t < kEps) {
-        return false;   // behind or at the ray origin
-    }
-    if (u < -kEps || u > 1.0 + kEps) {
-        return false;   // outside the segment
-    }
-    P = C + (t * d);
-    tRay = t;
-    return true;
-}
-
-struct RayHit {
-    double  angle    = 0.0;   ///< direction angle around center (radians)
-    int     edgeIndex = -1;   ///< index j of boundary edge [V[j], V[j+1]] containing the exit
-    QPointF point;            ///< exit point on the boundary
+// A cut point projected onto the polygon boundary.
+struct Cut {
+    int     segment  = 0;    ///< boundary edge index [V[segment], V[segment+1]]
+    double  t        = 0.0;  ///< position along that edge [0,1]
+    QPointF point;           ///< the projected point
+    double  perimPos = 0.0;  ///< segment + t, for ordering around the boundary
 };
 
-// Nearest boundary exit of a ray cast from C in direction d. Returns false if
-// the ray never crosses the boundary (center cannot "see" out in that direction).
-bool nearestExit(const QList<QPointF>& V, const QPointF& C, const QPointF& d, RayHit& hit)
+// Project p onto the nearest point of the closed polygon boundary.
+Cut projectToBoundary(const QList<QPointF>& V, const QPointF& p)
 {
     const int n = V.size();
-    double bestT = std::numeric_limits<double>::max();
-    bool found = false;
+    Cut best;
+    double bestDist = std::numeric_limits<double>::max();
     for (int j = 0; j < n; ++j) {
-        QPointF P;
-        double t;
-        if (rayEdgeIntersect(C, d, V[j], V[(j + 1) % n], P, t)) {
-            if (t < bestT) {
-                bestT = t;
-                hit.edgeIndex = j;
-                hit.point = P;
-                found = true;
-            }
+        const QPointF A = V[j];
+        const QPointF B = V[(j + 1) % n];
+        const QPointF ab = B - A;
+        const double len2 = (ab.x() * ab.x()) + (ab.y() * ab.y());
+        double t = (len2 > 0.0) ? (((p.x() - A.x()) * ab.x()) + ((p.y() - A.y()) * ab.y())) / len2 : 0.0;
+        t = std::clamp(t, 0.0, 1.0);
+        const QPointF proj(A.x() + (t * ab.x()), A.y() + (t * ab.y()));
+        const double dist = std::hypot(p.x() - proj.x(), p.y() - proj.y());
+        if (dist < bestDist) {
+            bestDist = dist;
+            best.segment = j;
+            best.t = t;
+            best.point = proj;
+            best.perimPos = j + t;
         }
     }
-    return found;
+    return best;
 }
 
-// Drop consecutive near-duplicate vertices (and a duplicated closing vertex).
 QList<QPointF> dedupe(const QList<QPointF>& poly)
 {
     QList<QPointF> out;
@@ -153,8 +130,6 @@ QList<SplitRegion> ControlPointSplitter::split(const SplitInput& input, QString&
 
     const QGeoCoordinate origin = input.masterPolygon.first();
 
-    // Project polygon, center and edge points onto a local tangent plane
-    // (x == East, y == North) so we can do planar geometry.
     auto toLocal = [&origin](const QGeoCoordinate& c) {
         double north, east, down;
         QGCGeo::convertGeoToNed(c, origin, north, east, down);
@@ -174,49 +149,32 @@ QList<SplitRegion> ControlPointSplitter::split(const SplitInput& input, QString&
         return {};
     }
 
-    // One ray per edge control point, sorted CCW by direction around the center.
-    QList<RayHit> hits;
+    // Each edge control point becomes a cut where it projects onto the boundary.
+    QList<Cut> cuts;
     for (const QGeoCoordinate& e : input.edgePoints) {
-        const QPointF ep = toLocal(e);
-        const QPointF d(ep.x() - center.x(), ep.y() - center.y());
-        if (std::hypot(d.x(), d.y()) < kEps) {
-            continue;   // control point sits on the center; ignore
-        }
-        RayHit hit;
-        hit.angle = std::atan2(d.y(), d.x());
-        if (!nearestExit(V, center, d, hit)) {
-            errorString = QObject::tr("A control point does not project onto the survey boundary. Move the center toward the middle of the area.");
-            return {};
-        }
-        hits.append(hit);
+        cuts.append(projectToBoundary(V, toLocal(e)));
     }
-
-    if (hits.size() < 2) {
-        errorString = QObject::tr("At least 2 valid control points are required.");
-        return {};
-    }
-
-    std::sort(hits.begin(), hits.end(), [](const RayHit& a, const RayHit& b) {
-        return a.angle < b.angle;
+    std::sort(cuts.begin(), cuts.end(), [](const Cut& a, const Cut& b) {
+        return a.perimPos < b.perimPos;
     });
 
     const int n = V.size();
-    const int rayCount = hits.size();
+    const int cutCount = cuts.size();
 
     QList<SplitRegion> regions;
-    regions.reserve(rayCount);
+    regions.reserve(cutCount);
 
-    for (int i = 0; i < rayCount; ++i) {
-        const RayHit& a = hits[i];
-        const RayHit& b = hits[(i + 1) % rayCount];
+    for (int i = 0; i < cutCount; ++i) {
+        const Cut& a = cuts[i];
+        const Cut& b = cuts[(i + 1) % cutCount];
 
-        // Wedge = center -> exit(a) -> (real boundary vertices a..b) -> exit(b).
+        // Wedge = center -> cut(a) -> boundary vertices a..b -> cut(b).
         QList<QPointF> wedge;
         wedge.append(center);
         wedge.append(a.point);
 
-        int k = a.edgeIndex;
-        while (k != b.edgeIndex) {
+        int k = a.segment;
+        while (k != b.segment) {
             k = (k + 1) % n;
             wedge.append(V[k]);
         }
@@ -227,7 +185,6 @@ QList<SplitRegion> ControlPointSplitter::split(const SplitInput& input, QString&
             continue;
         }
 
-        // Back to geographic coordinates.
         SplitRegion region;
         region.polygon.reserve(wedge.size());
         for (const QPointF& p : wedge) {
@@ -241,6 +198,5 @@ QList<SplitRegion> ControlPointSplitter::split(const SplitInput& input, QString&
     if (regions.isEmpty()) {
         errorString = QObject::tr("Could not generate any sub-regions from the current control points.");
     }
-
     return regions;
 }

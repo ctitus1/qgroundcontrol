@@ -83,10 +83,10 @@ signals:
 private:
     struct ControlState {
         int                     regionCount = 1;        ///< 1 == undivided
-        QGeoCoordinate          center;
-        QList<QGeoCoordinate>   edgePoints;
+        QGeoCoordinate          center;                 ///< interior apex control point
+        QList<double>           edgeParams;             ///< one boundary cut per region, stored as a perimeter fraction [0,1)
         bool                    seeded = false;         ///< true once center/edges are populated
-        QGeoCoordinate          lastPolygonCenter;      ///< survey polygon centroid last seen; used to translate control points when the whole survey is moved
+        QGeoCoordinate          lastPolygonCenter;      ///< survey polygon centroid last seen; used to translate the center when the whole survey is moved
     };
 
     // Casting / identity helpers
@@ -101,9 +101,16 @@ private:
     ControlState&         _stateFor(QObject* item);
     void                  _seedControlPoints(QObject* item, ControlState& state, int count);
 
-    // Translate the control points when the whole survey polygon is moved, so
-    // the division rides along with the survey instead of being left behind.
+    // Translate the center when the whole survey polygon is moved, so the
+    // division rides along with the survey. Edge cuts are perimeter fractions
+    // and follow the boundary automatically.
     void                  _onSurveyPolygonMoved(QObject* survey);
+
+    // Boundary <-> perimeter-fraction conversions for edge control points.
+    // A fraction of 0 is the first vertex; it increases with arc length,
+    // wrapping at 1.0 back to the start.
+    static QGeoCoordinate _boundaryCoordinate(const QList<QGeoCoordinate>& polygon, double param);
+    static double         _boundaryParam(const QList<QGeoCoordinate>& polygon, const QGeoCoordinate& coordinate);
 
     // Region generation
     QList<SplitRegion>    _computeRegions(QObject* item, QString& errorString);
