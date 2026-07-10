@@ -46,7 +46,7 @@ Item {
     property var    _handles:       []      ///< live control-point indicator objects
     property var    _regionItems:   []      ///< live region-overlay MapPolygons (reused, not recreated per frame)
     property var    _flightItems:   []      ///< live per-region flight-path MapPolylines (reused)
-    property bool   _dragging:      false   ///< true while a control point is being dragged
+    property bool   _dragging:      false   ///< true while a control point is being dragged by the mouse
     property bool   _divided:       false   ///< true when showing region visuals instead of the master grid
 
     signal clicked(int sequenceNumber)
@@ -55,12 +55,14 @@ Item {
         return _missionItem && customSurveyManager.isCustomSurvey(_missionItem) && _missionItem.isCurrentItem
     }
 
-    // Recompute regions + (re)build handles when the count changes. Region
-    // overlays refresh every call (cheap, keeps the preview live); handles are
-    // only rebuilt when their count changes so an in-progress drag is never
-    // destroyed out from under the user.
+    // Recompute regions + transects, and (re)build handles when the count
+    // changes. This is the full-recompute path: it runs for control-vertex mouse
+    // drags (the division reshapes → grids must rebuild live), survey reshapes,
+    // panel edits, etc. A whole-survey TRANSLATION does NOT come here — it is a
+    // rigid shift handled by _translateVisuals via onCustomSurveyTranslated.
     function _sync() {
         var show = _shouldShow()
+
         _regions = show ? customSurveyManager.regionPolygons(_missionItem) : []
         _syncRegionVisuals(show)
 
@@ -70,14 +72,12 @@ Item {
             _controlCount = count
             _rebuildControlVisuals(show)
         } else if (!_dragging) {
-            // Count is unchanged but positions may have moved (e.g. the whole
-            // survey was dragged). Nudge the existing handles to follow — but
-            // never while the user is actively dragging one.
+            // Count is unchanged but positions may have moved. Nudge the existing
+            // handles to follow — but never while the user is actively dragging
+            // one (that handle tracks the cursor via its own drag handler).
             _updateHandlePositions()
         }
 
-        // Refresh the per-region flight paths live so they track control-point
-        // drags and parameter changes as they happen (not only after settling).
         _syncFlightPaths()
     }
 
@@ -121,6 +121,31 @@ Item {
             _regionItems[i].regionIndex = i
             _regionItems[i].regionPath  = regions[i].polygon
         }
+    }
+
+    // Rigidly shift every region outline and transect polyline by (distance,
+    // azimuth) — used while the whole survey is translated so the lines follow
+    // without the cost of regenerating each region's grid.
+    function _translateVisuals(distance, azimuth) {
+        for (var i = 0; i < _regionItems.length; i++) {
+            if (_regionItems[i]) {
+                _regionItems[i].regionPath = _translatePath(_regionItems[i].regionPath, distance, azimuth)
+            }
+        }
+        for (var j = 0; j < _flightItems.length; j++) {
+            if (_flightItems[j]) {
+                _flightItems[j].pathPoints = _translatePath(_flightItems[j].pathPoints, distance, azimuth)
+            }
+        }
+    }
+
+    function _translatePath(points, distance, azimuth) {
+        var out = []
+        for (var k = 0; k < points.length; k++) {
+            // distanceUp defaults to 0, so altitudes are preserved.
+            out.push(points[k].atDistanceAndAzimuth(distance, azimuth))
+        }
+        return out
     }
 
     function _rebuildControlVisuals(show) {
@@ -206,7 +231,22 @@ Item {
 
     Connections {
         target: _missionItem ? _missionItem.surveyAreaPolygon : null
-        function onPathChanged() { _sync() }
+        // Any polygon edit EXCEPT a rigid whole-survey translation recomputes.
+        // During a center-drag translation the manager instead emits
+        // customSurveyTranslated (handled below), so we skip the recompute here
+        // to avoid regenerating every grid every frame.
+        function onPathChanged() {
+            if (!_missionItem.surveyAreaPolygon.centerDrag) {
+                _sync()
+            }
+        }
+        // On release of a whole-survey move, recompute the exact grids (the live
+        // translation is a rigid shift and can drift by sub-pixel amounts).
+        function onCenterDragChanged() {
+            if (_missionItem && _missionItem.surveyAreaPolygon && !_missionItem.surveyAreaPolygon.centerDrag) {
+                _sync()
+            }
+        }
     }
 
     Connections {
@@ -214,15 +254,32 @@ Item {
         function onIsCurrentItemChanged() { _sync() }
         // Panel edits (grid angle, altitude, spacing, turnaround, ...) rebuild
         // the master's transects and fire this; refresh the per-region grids too,
-        // live (e.g. while the angle slider is being dragged).
-        function onVisualTransectPointsChanged() { _syncFlightPaths() }
+        // live (e.g. while the angle slider is dragged). Skipped only during a
+        // rigid whole-survey translation, which shifts the lines instead.
+        function onVisualTransectPointsChanged() {
+            if (!_missionItem.surveyAreaPolygon.centerDrag) {
+                _syncFlightPaths()
+            }
+        }
     }
 
     Connections {
         target: customSurveyManager
+        // A control vertex (or the center) was moved by the mouse, the region
+        // count/offset changed, etc. → the division reshapes, so recompute live.
         function onCustomSurveyChanged(item) {
             if (item === _missionItem) {
                 _sync()
+            }
+        }
+        // The whole survey was translated (center-handle drag): the division is
+        // rigid, so shift the already-built outlines + transects by the delta
+        // rather than recomputing. Handles follow the (already translated)
+        // control points.
+        function onCustomSurveyTranslated(item, distance, azimuth) {
+            if (item === _missionItem) {
+                _translateVisuals(distance, azimuth)
+                _updateHandlePositions()
             }
         }
     }
@@ -311,7 +368,7 @@ Item {
             // MapQuickItem polish() loop (freeze/crash). The center is larger so
             // its ring stays grabbable behind the survey centroid marker
             // (z + 2, below the survey marker's z + 3).
-            property real markerSize: ScreenTools.defaultFontPixelHeight * (pointIndex < 0 ? 2.0 : 1.1)
+            property real markerSize: ScreenTools.defaultFontPixelHeight * (pointIndex < 0 ? 2.5 : 1.1)
 
             anchorPoint.x:  markerSize / 2
             anchorPoint.y:  markerSize / 2
@@ -340,10 +397,13 @@ Item {
 
             onDragStart: { _dragActive = true; _root._dragging = true }
             // On release, snap the (edge) handles back onto their ray midpoints.
+            // The grids already updated live during the drag; a final _sync
+            // reconciles the snapped handle positions.
             onDragStop: {
                 _dragActive = false
                 _root._dragging = false
                 _root._updateHandlePositions()
+                _root._sync()
             }
 
             onItemCoordinateChanged: {

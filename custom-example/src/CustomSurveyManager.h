@@ -88,6 +88,10 @@ public:
 signals:
     void lastErrorChanged();
     void customSurveyChanged(QObject* item);
+    // Emitted when the whole survey is translated (center-handle drag): the
+    // division is rigid, so the visuals can shift the existing region outlines
+    // and transects by this geodesic delta instead of recomputing them.
+    void customSurveyTranslated(QObject* item, double distance, double azimuth);
 
 private:
     struct ControlState {

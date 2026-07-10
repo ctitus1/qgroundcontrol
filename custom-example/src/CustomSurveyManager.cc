@@ -249,7 +249,17 @@ void CustomSurveyManager::_onSurveyPolygonMoved(QObject* survey)
         }
     }
 
-    emit customSurveyChanged(survey);
+    // A whole-survey CENTER drag is a rigid translation: the control points just
+    // shifted by (distance, azimuth), so the regions/transects shift by exactly
+    // the same delta. Tell the visuals to translate the already-built lines
+    // (cheap) rather than recompute. Any other polygon edit (a vertex reshape,
+    // resize, KML load, ...) genuinely changes region shape, so fall back to a
+    // full recompute.
+    if (surveyItem->surveyAreaPolygon()->centerDrag()) {
+        emit customSurveyTranslated(survey, distance, azimuth);
+    } else {
+        emit customSurveyChanged(survey);
+    }
 }
 
 //=============================================================================
