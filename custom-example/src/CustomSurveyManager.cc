@@ -188,7 +188,18 @@ bool CustomSurveyManager::_markCustomSurvey(QObject* item, bool setDirty)
         // still fires, so it's the reliable trigger for both moves and reshapes.
         if (QGCMapPolygon* polygon = survey->surveyAreaPolygon()) {
             _stateBySurvey[survey].lastPolygonCenter = polygon->center();
-            connect(polygon, &QGCMapPolygon::pathChanged, this, [this, survey]() {
+            connect(polygon, &QGCMapPolygon::pathChanged, this, [this, survey, polygon]() {
+                // Core-bug workaround (no source mods): QGCMapPolygon::setCenter
+                // gates its centerChanged emit behind the SAME _deferredPathChanged
+                // flag it already raised for pathChanged, so during a center drag
+                // centerChanged never fires. The core centroid marker binds
+                // `coordinate: mapPolygon.center`, so its binding freezes even
+                // though center() is already up to date. pathChanged DOES fire, so
+                // re-emit centerChanged here to drive the real marker's binding.
+                if (polygon->centerDrag()) {
+                    QMetaObject::invokeMethod(polygon, "centerChanged",
+                                              Q_ARG(QGeoCoordinate, polygon->center()));
+                }
                 _onSurveyPolygonMoved(survey);
             });
         }

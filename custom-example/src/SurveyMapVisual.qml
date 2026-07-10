@@ -48,8 +48,6 @@ Item {
     property var    _flightItems:   []      ///< live per-region flight-path MapPolylines (reused)
     property bool   _dragging:      false   ///< true while a control point is being dragged by the mouse
     property bool   _divided:       false   ///< true when showing region visuals instead of the master grid
-    property var    _centerMarker:      null                        ///< dummy non-interactive dot marking the survey centroid (whole-survey drag point)
-    property var    _centerMarkerCoord: QtPositioning.coordinate()  ///< coordinate that dummy tracks; pushed from mapPolygon.center on pathChanged so it follows during a center drag
 
     signal clicked(int sequenceNumber)
 
@@ -64,10 +62,6 @@ Item {
     // rigid shift handled by _translateVisuals via onCustomSurveyTranslated.
     function _sync() {
         var show = _shouldShow()
-
-        if (show && _missionItem.surveyAreaPolygon) {
-            _centerMarkerCoord = _missionItem.surveyAreaPolygon.center
-        }
 
         _regions = show ? customSurveyManager.regionPolygons(_missionItem) : []
         _syncRegionVisuals(show)
@@ -227,23 +221,10 @@ Item {
         }
     }
 
-    Component.onCompleted: {
-        _sync()
-        if (map) {
-            _centerMarker = centerMarkerComponent.createObject(map)
-            if (_centerMarker) {
-                map.addMapItem(_centerMarker)
-            }
-        }
-    }
+    Component.onCompleted:   _sync()
     Component.onDestruction: {
         _destroyPool(_regionItems); _regionItems = []
         _destroyPool(_flightItems); _flightItems = []
-        if (_centerMarker) {
-            if (map) { map.removeMapItem(_centerMarker) }
-            _centerMarker.destroy()
-            _centerMarker = null
-        }
         controlObjMgr.destroyObjects()
         _handles = []
     }
@@ -255,10 +236,6 @@ Item {
         // customSurveyTranslated (handled below), so we skip the recompute here
         // to avoid regenerating every grid every frame.
         function onPathChanged() {
-            // pathChanged DOES fire during a center drag (centerChanged does
-            // not), so read the live centroid here to keep the dummy marker
-            // following even while core's own centroid marker is frozen.
-            _centerMarkerCoord = _missionItem.surveyAreaPolygon.center
             if (!_missionItem.surveyAreaPolygon.centerDrag) {
                 _sync()
             }
@@ -343,37 +320,6 @@ Item {
     }
 
     QGCDynamicObjectManager { id: controlObjMgr }
-
-    // Purely-decorative dot marking the survey centroid (the whole-survey drag
-    // point). Core's own centroid handle binds to mapPolygon.center, whose change
-    // signal is suppressed during a center drag, so it visually freezes mid-drag.
-    // This dummy follows because _centerMarkerCoord is pushed from the live
-    // mapPolygon.center on every pathChanged. It has NO mouse area, so it never
-    // intercepts the real drag handles sitting beneath it at the same z.
-    Component {
-        id: centerMarkerComponent
-
-        MapQuickItem {
-            z:              QGroundControl.zOrderMapItems + 3   // same level as core's survey centroid marker
-            visible:        _root._divided && coordinate.isValid
-            opacity:        _root.opacity
-            coordinate:     _root._centerMarkerCoord
-
-            property real markerSize: ScreenTools.defaultFontPixelHeight * 1.5
-
-            anchorPoint.x:  markerSize / 2
-            anchorPoint.y:  markerSize / 2
-
-            sourceItem: Rectangle {
-                width:          markerSize
-                height:         markerSize
-                radius:         markerSize / 2
-                color:          "white"
-                border.color:   Qt.rgba(0, 0, 0, 0.4)
-                border.width:   1
-            }
-        }
-    }
 
     // One region's transect flight path.
     Component {
