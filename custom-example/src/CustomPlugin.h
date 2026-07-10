@@ -20,6 +20,7 @@
 class CustomOptions;
 class CustomPlugin;
 class CustomSettings;
+class CustomSurveyManager;
 class QQmlApplicationEngine;
 
 Q_DECLARE_LOGGING_CATEGORY(CustomLog)
@@ -73,6 +74,12 @@ public:
     void                    paletteOverride                 (const QString &colorName, QGCPalette::PaletteColorInfo_t& colorInfo) final;
     QQmlApplicationEngine*  createQmlApplicationEngine      (QObject* parent) final;
 
+    // Custom Survey plugin hooks. A custom survey is a stock SurveyComplexItem
+    // managed by _customSurveyManager; these route core hooks to it.
+    QStringList             complexMissionItemNames         (Vehicle *vehicle, const QStringList &complexMissionItemNames) final;
+    void                    postSaveToMissionJson           (PlanMasterController *pController, QJsonObject &missionJson) final;
+    void                    postLoadFromJson                (PlanMasterController *pController, QJsonObject &json) final;
+
 private slots:
     void _advancedChanged(bool advanced);
 
@@ -84,6 +91,7 @@ private:
     QQmlApplicationEngine *_qmlEngine = nullptr;
     class CustomOverrideInterceptor *_selector = nullptr;
     QVariantList    _customSettingsList; // Not to be mixed up with QGCCorePlugin implementation
+    CustomSurveyManager* _customSurveyManager = nullptr;
 };
 
 /*===========================================================================*/

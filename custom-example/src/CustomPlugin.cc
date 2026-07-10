@@ -10,6 +10,7 @@
  */
 
 #include "CustomPlugin.h"
+#include "CustomSurveyManager.h"
 #include "QmlComponentInfo.h"
 #include "QGCLoggingCategory.h"
 #include "QGCPalette.h"
@@ -21,6 +22,7 @@
 #include <QtCore/QApplicationStatic>
 #endif
 #include <QtQml/QQmlApplicationEngine>
+#include <QtQml/QQmlContext>
 #include <QtQml/QQmlFile>
 
 QGC_LOGGING_CATEGORY(CustomLog, "gcs.custom.customplugin")
@@ -79,6 +81,7 @@ CustomPlugin::CustomPlugin(QObject *parent)
     , _options(new CustomOptions(this, this))
 {
     _showAdvancedUI = false;
+    _customSurveyManager = new CustomSurveyManager(this);
     connect(this, &QGCCorePlugin::showAdvancedUIChanged, this, &CustomPlugin::_advancedChanged);
 }
 
@@ -366,10 +369,33 @@ QQmlApplicationEngine* CustomPlugin::createQmlApplicationEngine(QObject* parent)
     _qmlEngine->addImportPath("qrc:/Custom/Widgets");
     // TODO: Investigate _qmlEngine->setExtraSelectors({"custom"})
 
+    // Expose the custom survey manager to the overridden Plan-view QML.
+    _qmlEngine->rootContext()->setContextProperty(QStringLiteral("customSurveyManager"), _customSurveyManager);
+
     _selector = new CustomOverrideInterceptor();
     _qmlEngine->addUrlInterceptor(_selector);
 
     return _qmlEngine;
+}
+
+QStringList CustomPlugin::complexMissionItemNames(Vehicle *vehicle, const QStringList &complexMissionItemNames)
+{
+    QStringList names = QGCCorePlugin::complexMissionItemNames(vehicle, complexMissionItemNames);
+    const QString customName = _customSurveyManager->customSurveyName();
+    if (!names.contains(customName)) {
+        names.append(customName);
+    }
+    return names;
+}
+
+void CustomPlugin::postSaveToMissionJson(PlanMasterController *pController, QJsonObject &missionJson)
+{
+    _customSurveyManager->decorateMissionJson(pController, missionJson);
+}
+
+void CustomPlugin::postLoadFromJson(PlanMasterController *pController, QJsonObject &json)
+{
+    _customSurveyManager->restoreFromPlanJson(pController, json);
 }
 
 /*===========================================================================*/
