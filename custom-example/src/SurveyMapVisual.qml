@@ -44,6 +44,8 @@ Item {
     property var    _regions:       []
     property int    _controlCount:  0
     property var    _handles:       []      ///< live control-point indicator objects
+    property var    _regionItems:   []      ///< live region-overlay MapPolygons (reused, not recreated per frame)
+    property var    _flightItems:   []      ///< live per-region flight-path MapPolylines (reused)
     property bool   _dragging:      false   ///< true while a control point is being dragged
     property bool   _divided:       false   ///< true when showing region visuals instead of the master grid
 
@@ -60,7 +62,7 @@ Item {
     function _sync() {
         var show = _shouldShow()
         _regions = show ? customSurveyManager.regionPolygons(_missionItem) : []
-        _rebuildRegionVisuals(show)
+        _syncRegionVisuals(show)
 
         var count = show ? customSurveyManager.edgeControlPoints(_missionItem).length : 0
         _divided = show && count >= 2
@@ -74,38 +76,50 @@ Item {
             _updateHandlePositions()
         }
 
-        // Rebuild the per-region flight paths live so they track control-point
+        // Refresh the per-region flight paths live so they track control-point
         // drags and parameter changes as they happen (not only after settling).
-        _rebuildFlightPaths()
+        _syncFlightPaths()
     }
 
-    function _rebuildFlightPaths() {
-        flightPathObjMgr.destroyObjects()
-        if (!_shouldShow()) {
+    // Reuse a pool of MapPolyline objects: grow/shrink only when the region
+    // count changes, otherwise just update each polyline's points. Destroying
+    // and recreating QtLocation map items every frame is what made this laggy.
+    function _syncFlightPaths() {
+        if (!map) {
             return
         }
-        var paths = customSurveyManager.regionFlightPaths(_missionItem)
+        var paths = _shouldShow() ? customSurveyManager.regionFlightPaths(_missionItem) : []
+        while (_flightItems.length > paths.length) {
+            var drop = _flightItems.pop()
+            if (drop) { map.removeMapItem(drop); drop.destroy() }
+        }
+        while (_flightItems.length < paths.length) {
+            var add = flightPathComponent.createObject(map, { "regionIndex": _flightItems.length })
+            if (add) { map.addMapItem(add); _flightItems.push(add) }
+        }
         for (var i = 0; i < paths.length; i++) {
-            if (!paths[i] || paths[i].length < 2) {
-                continue
-            }
-            var obj = flightPathComponent.createObject(map, { "pathPoints": paths[i], "regionIndex": i })
-            if (obj) {
-                flightPathObjMgr.addObject(obj, map)
-            }
+            _flightItems[i].regionIndex = i
+            _flightItems[i].pathPoints  = (paths[i] && paths[i].length >= 2) ? paths[i] : []
         }
     }
 
-    function _rebuildRegionVisuals(show) {
-        regionObjMgr.destroyObjects()
-        if (!show || _regions.length === 0) {
+    // Same pooling approach for the colored region-fill overlays.
+    function _syncRegionVisuals(show) {
+        if (!map) {
             return
         }
-        for (var i = 0; i < _regions.length; i++) {
-            var obj = regionComponent.createObject(map, { "regionPath": _regions[i].polygon, "regionIndex": i })
-            if (obj) {
-                regionObjMgr.addObject(obj, map)
-            }
+        var regions = show ? _regions : []
+        while (_regionItems.length > regions.length) {
+            var drop = _regionItems.pop()
+            if (drop) { map.removeMapItem(drop); drop.destroy() }
+        }
+        while (_regionItems.length < regions.length) {
+            var add = regionComponent.createObject(map, { "regionIndex": _regionItems.length })
+            if (add) { map.addMapItem(add); _regionItems.push(add) }
+        }
+        for (var i = 0; i < regions.length; i++) {
+            _regionItems[i].regionIndex = i
+            _regionItems[i].regionPath  = regions[i].polygon
         }
     }
 
@@ -172,8 +186,23 @@ Item {
         }
     }
 
+    function _destroyPool(pool) {
+        // If the map is already gone these items (parented to it) go with it.
+        if (!map) {
+            return
+        }
+        for (var i = 0; i < pool.length; i++) {
+            if (pool[i]) { map.removeMapItem(pool[i]); pool[i].destroy() }
+        }
+    }
+
     Component.onCompleted:   _sync()
-    Component.onDestruction: { regionObjMgr.destroyObjects(); controlObjMgr.destroyObjects(); flightPathObjMgr.destroyObjects(); _handles = [] }
+    Component.onDestruction: {
+        _destroyPool(_regionItems); _regionItems = []
+        _destroyPool(_flightItems); _flightItems = []
+        controlObjMgr.destroyObjects()
+        _handles = []
+    }
 
     Connections {
         target: _missionItem ? _missionItem.surveyAreaPolygon : null
@@ -186,7 +215,7 @@ Item {
         // Panel edits (grid angle, altitude, spacing, turnaround, ...) rebuild
         // the master's transects and fire this; refresh the per-region grids too,
         // live (e.g. while the angle slider is being dragged).
-        function onVisualTransectPointsChanged() { _rebuildFlightPaths() }
+        function onVisualTransectPointsChanged() { _syncFlightPaths() }
     }
 
     Connections {
@@ -233,9 +262,7 @@ Item {
         }
     }
 
-    QGCDynamicObjectManager { id: regionObjMgr }
     QGCDynamicObjectManager { id: controlObjMgr }
-    QGCDynamicObjectManager { id: flightPathObjMgr }
 
     // One region's transect flight path.
     Component {

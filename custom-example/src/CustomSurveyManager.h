@@ -121,8 +121,15 @@ private:
     // ray never exits (e.g. center outside the polygon).
     static QGeoCoordinate _rayBoundaryIntersection(const QList<QGeoCoordinate>& polygon, const QGeoCoordinate& center, double azimuthDeg);
 
-    // Region generation
+    // Region generation. Memoized on an input signature (polygon + control
+    // points + offset + count) so the splitter runs once per actual change no
+    // matter how many callers ask (map overlays, flight paths, editor list).
     QList<SplitRegion>    _computeRegions(QObject* item, QString& errorString);
+
+    // Cheap signature of the master's transect PARAMETERS (excludes grid angle,
+    // which is mirrored live, and the polygon, which is geometry). Used to decide
+    // when shadows must be reconfigured — avoids a per-frame save()/load().
+    QString               _masterParamSignature(SurveyComplexItem* survey) const;
 
     // Keep one shadow SurveyComplexItem per region, in sync with the region
     // polygons (params mirrored from the master for now). These are what render
@@ -150,7 +157,9 @@ private:
     QHash<int, ControlState>                   _pendingState;      ///< restored-by-sequence before the survey object exists
     QSet<QObject*>                             _customSurveyItems; ///< which surveys are custom
     QHash<QObject*, QList<SurveyComplexItem*>> _regionSurveys;     ///< per-master shadow surveys, one per region
-    QHash<QObject*, QJsonObject>               _lastMasterJson;    ///< cached master-survey JSON per master; skip shadow reloads when unchanged
+    QHash<QObject*, QString>                   _lastParamSig;      ///< last master-parameter signature per master; reconfigure shadows only when it changes
+    QHash<QObject*, QList<SplitRegion>>        _cachedRegions;     ///< memoized region result per master
+    QHash<QObject*, QString>                   _cachedRegionSig;   ///< input signature the memoized regions were computed from
     ActiveRegionSplitter                       _splitter;          ///< swappable division strategy
     QString                                    _lastError;
 };

@@ -9,6 +9,8 @@
 
 #include "CustomSurveyManager.h"
 
+#include "CameraCalc.h"
+#include "Fact.h"
 #include "JsonHelper.h"
 #include "MissionController.h"
 #include "PlanMasterController.h"
@@ -24,6 +26,7 @@
 #include <QtCore/QJsonArray>
 #include <QtCore/QJsonDocument>
 #include <QtCore/QPointF>
+#include <QtCore/QStringList>
 
 #include <cmath>
 #include <limits>
@@ -142,7 +145,9 @@ void CustomSurveyManager::_attachSurvey(QObject* survey)
     connect(survey, &QObject::destroyed, this, [this](QObject* obj) {
         _stateBySurvey.remove(obj);
         _customSurveyItems.remove(obj);
-        _lastMasterJson.remove(obj);
+        _lastParamSig.remove(obj);
+        _cachedRegions.remove(obj);
+        _cachedRegionSig.remove(obj);
         const QList<SurveyComplexItem*> shadows = _regionSurveys.take(obj);
         for (SurveyComplexItem* shadow : shadows) {
             if (shadow) {
@@ -443,6 +448,26 @@ QList<SplitRegion> CustomSurveyManager::_computeRegions(QObject* item, QString& 
 
     const QGeoCoordinate center = state.center.isValid() ? state.center : survey->surveyAreaPolygon()->center();
 
+    // Memoization: the split is comparatively expensive (ray casts + wedge walk
+    // + inset + clip) and every live frame asks for regions from several places
+    // (map overlays, per-region flight paths, the editor's region list). Build a
+    // signature of everything the split depends on; return the cached result
+    // unless one of those inputs actually changed.
+    QStringList sigParts;
+    sigParts << QString::number(state.regionCount)
+             << QString::number(state.regionOffset, 'f', 3);
+    for (const QGeoCoordinate& c : polygon) {
+        sigParts << QString::number(c.latitude(), 'f', 9) << QString::number(c.longitude(), 'f', 9);
+    }
+    sigParts << QString::number(center.latitude(), 'f', 9) << QString::number(center.longitude(), 'f', 9);
+    for (const QGeoCoordinate& v : std::as_const(state.edgeVertices)) {
+        sigParts << QString::number(v.latitude(), 'f', 9) << QString::number(v.longitude(), 'f', 9);
+    }
+    const QString sig = sigParts.join(QLatin1Char('|'));
+    if (_cachedRegionSig.value(item) == sig && _cachedRegions.contains(item)) {
+        return _cachedRegions.value(item);
+    }
+
     // Cut = where the ray from the center through each (fixed) control vertex
     // meets the boundary.
     SplitInput input;
@@ -456,7 +481,41 @@ QList<SplitRegion> CustomSurveyManager::_computeRegions(QObject* item, QString& 
         }
     }
 
-    return _splitter.split(input, errorString);
+    const QList<SplitRegion> regions = _splitter.split(input, errorString);
+    _cachedRegionSig[item] = sig;
+    _cachedRegions[item]   = regions;
+    return regions;
+}
+
+QString CustomSurveyManager::_masterParamSignature(SurveyComplexItem* survey) const
+{
+    if (!survey) {
+        return QString();
+    }
+    CameraCalc* cc = survey->cameraCalc();
+    const QStringList parts = {
+        // Survey-level params. Grid angle is deliberately EXCLUDED — it is
+        // mirrored to the shadows directly on every sync (cheap), so dragging
+        // the angle slider never triggers the heavy save()/load() reconfigure.
+        survey->flyAlternateTransects()->rawValue().toString(),
+        survey->splitConcavePolygons()->rawValue().toString(),
+        // Transect-style params.
+        survey->turnAroundDistance()->rawValue().toString(),
+        survey->cameraTriggerInTurnAround()->rawValue().toString(),
+        survey->hoverAndCapture()->rawValue().toString(),
+        survey->refly90Degrees()->rawValue().toString(),
+        survey->terrainAdjustTolerance()->rawValue().toString(),
+        survey->terrainAdjustMaxDescentRate()->rawValue().toString(),
+        survey->terrainAdjustMaxClimbRate()->rawValue().toString(),
+        // Camera calc: the adjusted footprints capture the net transect spacing
+        // regardless of which input (overlap / distance / camera) produced it.
+        QString::number(static_cast<int>(cc->distanceMode())),
+        cc->adjustedFootprintSide()->rawValue().toString(),
+        cc->adjustedFootprintFrontal()->rawValue().toString(),
+        cc->distanceToSurface()->rawValue().toString(),
+        cc->valueSetIsDistance()->rawValue().toString(),
+    };
+    return parts.join(QLatin1Char('|'));
 }
 
 QVariantList CustomSurveyManager::regionPolygons(QObject* item)
@@ -495,21 +554,9 @@ void CustomSurveyManager::_syncRegionSurveys(QObject* master, const QList<SplitR
             }
         }
         shadows.clear();
-        _lastMasterJson.remove(master);
+        _lastParamSig.remove(master);
         return;
     }
-
-    // Snapshot the master survey's parameters so each region inherits them. The
-    // control points are plugin state (not part of the survey's serialization),
-    // so this JSON only changes when the master's parameters/polygon change —
-    // NOT on a control-point drag. Reloading it into every shadow is expensive,
-    // so we skip that when it's unchanged (this keeps live updates smooth) and
-    // only re-set each region's polygon, which is what actually moved.
-    QJsonArray masterArray;
-    masterSurvey->save(masterArray);
-    const QJsonObject masterSurveyJson = masterArray.isEmpty() ? QJsonObject() : masterArray.first().toObject();
-    const bool paramsChanged = (_lastMasterJson.value(master) != masterSurveyJson);
-    _lastMasterJson[master] = masterSurveyJson;
 
     // Grow / shrink the shadow list to match the region count.
     const int oldCount = shadows.size();
@@ -522,21 +569,50 @@ void CustomSurveyManager::_syncRegionSurveys(QObject* master, const QList<SplitR
         }
     }
 
-    // Configure each shadow: (re)inherit master params only when they changed or
-    // the shadow is new; then set its sub-polygon, which rebuilds that region's
-    // transect grid synchronously.
-    for (int i = 0; i < regions.size(); ++i) {
-        SurveyComplexItem* shadow = shadows[i];
-        if (paramsChanged || i >= oldCount) {
-            QString errorString;
-            shadow->load(masterSurveyJson, 1, errorString);
+    // Reconfigure shadow PARAMETERS only on a genuine parameter edit (or for a
+    // newly created shadow). save() regenerates every mission item and load()
+    // reparses it, so doing this per frame is what made dragging laggy. The
+    // parameter signature excludes the grid angle and the polygon, so neither a
+    // control-point / whole-survey drag nor an angle-slider drag lands here.
+    const QString paramSig      = _masterParamSignature(masterSurvey);
+    const bool    paramsChanged = (_lastParamSig.value(master) != paramSig);
+    const bool    grew          = regions.size() > oldCount;
+    if (paramsChanged || grew) {
+        QJsonArray masterArray;
+        masterSurvey->save(masterArray);
+        const QJsonObject masterSurveyJson = masterArray.isEmpty() ? QJsonObject() : masterArray.first().toObject();
+        for (int i = 0; i < shadows.size(); ++i) {
+            if (paramsChanged || i >= oldCount) {
+                QString errorString;
+                shadows[i]->load(masterSurveyJson, 1, errorString);
+            }
         }
+        _lastParamSig[master] = paramSig;
+    }
 
-        QGCMapPolygon* polygon = shadow->surveyAreaPolygon();
-        polygon->beginReset();
-        polygon->clear();
-        polygon->appendVertices(regions[i].polygon);
-        polygon->endReset();
+    // Mirror the grid angle live. It is the one continuously-dragged parameter,
+    // so rather than the heavy reconfigure path above we copy the single fact
+    // directly (guarded, so an unchanged angle never forces a needless grid
+    // rebuild). The shadow rebuilds its transects synchronously on the change.
+    const QVariant masterAngle = masterSurvey->gridAngle()->rawValue();
+    for (SurveyComplexItem* shadow : std::as_const(shadows)) {
+        if (shadow->gridAngle()->rawValue() != masterAngle) {
+            shadow->gridAngle()->setRawValue(masterAngle);
+        }
+    }
+
+    // Set each region's sub-polygon, but only when it actually changed, so an
+    // idle sync (or one where only some regions moved) never rebuilds a grid
+    // needlessly. Setting the polygon rebuilds that region's transects
+    // synchronously (for fixed-altitude modes).
+    for (int i = 0; i < regions.size(); ++i) {
+        QGCMapPolygon* polygon = shadows[i]->surveyAreaPolygon();
+        if (polygon->coordinateList() != regions[i].polygon) {
+            polygon->beginReset();
+            polygon->clear();
+            polygon->appendVertices(regions[i].polygon);
+            polygon->endReset();
+        }
     }
 }
 
