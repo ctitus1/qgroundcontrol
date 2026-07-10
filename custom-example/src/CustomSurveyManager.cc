@@ -11,11 +11,15 @@
 
 #include "CameraCalc.h"
 #include "Fact.h"
+#include "FactMetaData.h"
 #include "JsonHelper.h"
 #include "MissionController.h"
+#include "MissionItem.h"
 #include "PlanMasterController.h"
 #include "QGCGeo.h"
+#include "QGCMAVLink.h"
 #include "QGCMapPolygon.h"
+#include "QGroundControlQmlGlobal.h"
 #include "QmlObjectListModel.h"
 #include "SurveyComplexItem.h"
 #include "VisualMissionItem.h"
@@ -34,6 +38,85 @@
 CustomSurveyManager::CustomSurveyManager(QObject* parent)
     : QObject(parent)
 {
+    _createCaptureFacts();
+}
+
+//=============================================================================
+// Capture-setting Facts (individual-waypoint export)
+//=============================================================================
+
+void CustomSurveyManager::_createCaptureFacts()
+{
+    // Gimbal pitch mirrors CameraSection's "GimbalPitch": the "gimbal-degrees"
+    // unit installs FactMetaData's built-in translator so the field shows +90 for
+    // straight-down (cooked) while rawValue()/the plan store -90 (raw). Reusing
+    // the unit reproduces that exact behavior with no manual sign flip.
+    FactMetaData* pitchMeta = new FactMetaData(FactMetaData::valueTypeDouble, QStringLiteral("GimbalPitch"), this);
+    pitchMeta->setRawUnits(QStringLiteral("gimbal-degrees"));
+    pitchMeta->setRawMin(-90.0);
+    pitchMeta->setRawMax(0.0);
+    pitchMeta->setDecimalPlaces(0);
+    _captureGimbalPitchFact = new Fact(0, QStringLiteral("GimbalPitch"), FactMetaData::valueTypeDouble, this);
+    _captureGimbalPitchFact->setMetaData(pitchMeta);
+    _captureGimbalPitchFact->setRawValue(-90.0);   // UI shows +90 == straight down
+
+    FactMetaData* yawMeta = new FactMetaData(FactMetaData::valueTypeDouble, QStringLiteral("GimbalYaw"), this);
+    yawMeta->setRawUnits(QStringLiteral("deg"));
+    yawMeta->setRawMin(-180.0);
+    yawMeta->setRawMax(180.0);
+    yawMeta->setDecimalPlaces(0);
+    _captureGimbalYawFact = new Fact(0, QStringLiteral("GimbalYaw"), FactMetaData::valueTypeDouble, this);
+    _captureGimbalYawFact->setMetaData(yawMeta);
+    _captureGimbalYawFact->setRawValue(0.0);
+
+    FactMetaData* holdMeta = new FactMetaData(FactMetaData::valueTypeDouble, QStringLiteral("Hold"), this);
+    holdMeta->setRawUnits(QStringLiteral("secs"));
+    holdMeta->setRawMin(0.0);
+    holdMeta->setDecimalPlaces(0);
+    _captureHoldFact = new Fact(0, QStringLiteral("Hold"), FactMetaData::valueTypeDouble, this);
+    _captureHoldFact->setMetaData(holdMeta);
+    _captureHoldFact->setRawValue(2.0);
+
+    // Editing any capture value dirties open custom-survey plans so it persists.
+    connect(_captureGimbalPitchFact, &Fact::rawValueChanged, this, [this](const QVariant&) { _markAllCustomSurveysDirty(); });
+    connect(_captureGimbalYawFact,   &Fact::rawValueChanged, this, [this](const QVariant&) { _markAllCustomSurveysDirty(); });
+    connect(_captureHoldFact,        &Fact::rawValueChanged, this, [this](const QVariant&) { _markAllCustomSurveysDirty(); });
+}
+
+void CustomSurveyManager::_markAllCustomSurveysDirty()
+{
+    if (_suppressCaptureDirty) {
+        return;     // restoring capture facts from a plan load must not dirty the plan
+    }
+    for (QObject* item : std::as_const(_customSurveyItems)) {
+        if (PlanMasterController* controller = _itemController(item)) {
+            controller->setDirty(true);
+        }
+    }
+}
+
+bool CustomSurveyManager::exportAsWaypoints(QObject* item)
+{
+    if (!_surveyItem(item)) {
+        return false;
+    }
+    return _stateFor(item).exportAsWaypoints;
+}
+
+void CustomSurveyManager::setExportAsWaypoints(QObject* item, bool enabled)
+{
+    if (!_surveyItem(item)) {
+        return;
+    }
+    ControlState& state = _stateFor(item);
+    if (state.exportAsWaypoints == enabled) {
+        return;
+    }
+    state.exportAsWaypoints = enabled;
+    if (PlanMasterController* controller = _itemController(item)) {
+        controller->setDirty(true);
+    }
+    emit customSurveyChanged(item);
 }
 
 //=============================================================================
@@ -685,10 +768,9 @@ QVariantList CustomSurveyManager::regionFlightPaths(QObject* item)
 // Export
 //=============================================================================
 
-QJsonObject CustomSurveyManager::_buildRegionSurveyJson(PlanMasterController* controller,
-                                                        const QJsonObject& masterSurveyJson,
-                                                        const QList<QGeoCoordinate>& regionPolygon,
-                                                        bool& terrainPending) const
+SurveyComplexItem* CustomSurveyManager::_buildRegionSurveyObject(PlanMasterController* controller,
+                                                                 const QJsonObject& masterSurveyJson,
+                                                                 const QList<QGeoCoordinate>& regionPolygon) const
 {
     // Build the region's survey from a genuine, freshly-configured survey
     // object so its transects are recomputed for the sub-polygon. We never
@@ -699,7 +781,7 @@ QJsonObject CustomSurveyManager::_buildRegionSurveyJson(PlanMasterController* co
     QString errorString;
     if (!temp->load(masterSurveyJson, 1, errorString)) {
         temp->deleteLater();
-        return {};
+        return nullptr;
     }
 
     QGCMapPolygon* polygon = temp->surveyAreaPolygon();
@@ -707,6 +789,19 @@ QJsonObject CustomSurveyManager::_buildRegionSurveyJson(PlanMasterController* co
     polygon->clear();
     polygon->appendVertices(regionPolygon);
     polygon->endReset();     // emits pathChanged -> synchronous transect rebuild
+
+    return temp;
+}
+
+QJsonObject CustomSurveyManager::_buildRegionSurveyJson(PlanMasterController* controller,
+                                                        const QJsonObject& masterSurveyJson,
+                                                        const QList<QGeoCoordinate>& regionPolygon,
+                                                        bool& terrainPending) const
+{
+    SurveyComplexItem* temp = _buildRegionSurveyObject(controller, masterSurveyJson, regionPolygon);
+    if (!temp) {
+        return {};
+    }
 
     if (temp->readyForSaveState() != VisualMissionItem::ReadyForSave) {
         terrainPending = true;
@@ -717,6 +812,213 @@ QJsonObject CustomSurveyManager::_buildRegionSurveyJson(PlanMasterController* co
     temp->deleteLater();
 
     return items.isEmpty() ? QJsonObject() : items.first().toObject();
+}
+
+//=============================================================================
+// Individual-waypoint expansion
+//=============================================================================
+
+QJsonObject CustomSurveyManager::_missionItemToJson(const MissionItem& item, bool withAltitude) const
+{
+    QJsonObject obj;
+    item.save(obj);   // type/command/frame/autoContinue/doJumpId/params[7] (NaN -> null)
+
+    // Coordinate items also carry the altitude trio the way SimpleMissionItem::save()
+    // writes it, so QGC shows the right altitude mode on reload.
+    if (withAltitude) {
+        int altMode;
+        switch (item.frame()) {
+        case MAV_FRAME_GLOBAL:              altMode = QGroundControlQmlGlobal::AltitudeModeAbsolute;     break;
+        case MAV_FRAME_GLOBAL_TERRAIN_ALT:  altMode = QGroundControlQmlGlobal::AltitudeModeTerrainFrame; break;
+        case MAV_FRAME_GLOBAL_RELATIVE_ALT:
+        default:                            altMode = QGroundControlQmlGlobal::AltitudeModeRelative;     break;
+        }
+        obj[QStringLiteral("AltitudeMode")]        = altMode;
+        obj[QStringLiteral("Altitude")]            = item.param7();
+        obj[QStringLiteral("AMSLAltAboveTerrain")] = QJsonValue::Null;   // recomputed on load if terrain-relative
+    }
+    return obj;
+}
+
+QJsonArray CustomSurveyManager::_buildRegionWaypointItems(PlanMasterController* controller,
+                                                          const QJsonObject& masterSurveyJson,
+                                                          const QList<QGeoCoordinate>& regionPolygon,
+                                                          double transectYawDeg,
+                                                          int& photoPointCount) const
+{
+    photoPointCount = 0;
+    QJsonArray out;
+
+    // Build the region survey, but force Hover & Capture ON *before* the polygon
+    // reset so the synchronous transect rebuild lays down one discrete waypoint at
+    // every photo location (NAV_WAYPOINT immediately followed by IMAGE_START_CAPTURE).
+    // This reuses QGC's own photo-point spacing (camera trigger distance) instead of
+    // reimplementing survey geometry in the plugin.
+    SurveyComplexItem* temp = new SurveyComplexItem(controller, /*flyView*/ false, QString());
+    QString errorString;
+    if (!temp->load(masterSurveyJson, 1, errorString)) {
+        temp->deleteLater();
+        return out;
+    }
+    temp->hoverAndCapture()->setRawValue(true);
+
+    QGCMapPolygon* polygon = temp->surveyAreaPolygon();
+    polygon->beginReset();
+    polygon->clear();
+    polygon->appendVertices(regionPolygon);
+    polygon->endReset();     // synchronous transect rebuild, now including photo points
+
+    // Enumerate the survey's generated mission items and pull out the photo points.
+    QObject itemParent;
+    QList<MissionItem*> genItems;
+    temp->appendMissionItems(genItems, &itemParent);
+
+    const double pitchRaw = _captureGimbalPitchFact->rawValue().toDouble();   // e.g. -90 (straight down)
+    const double gimbalYaw = _captureGimbalYawFact->rawValue().toDouble();
+    const double holdSecs  = _captureHoldFact->rawValue().toDouble();
+
+    int seqNum = 1;   // planned-home is item 0; real items start at doJumpId 1
+    for (int i = 0; i < genItems.count(); ++i) {
+        const MissionItem* capture = genItems[i];
+        if (capture->command() != MAV_CMD_IMAGE_START_CAPTURE) {
+            continue;
+        }
+        // The photo location is the NAV_WAYPOINT immediately preceding the capture.
+        if (i == 0 || genItems[i - 1]->command() != MAV_CMD_NAV_WAYPOINT) {
+            continue;
+        }
+        const MissionItem* wp = genItems[i - 1];
+        const MAV_FRAME frame = wp->frame();
+        const double lat = wp->param5();
+        const double lon = wp->param6();
+        const double alt = wp->param7();
+
+        // 1. Arrive: NAV_WAYPOINT, yaw = transect angle, hold 0.
+        MissionItem arrive(seqNum++, MAV_CMD_NAV_WAYPOINT, frame,
+                           0.0,             // param1 hold
+                           0.0, 0.0,        // param2 acceptance, param3 pass-through
+                           transectYawDeg,  // param4 yaw
+                           lat, lon, alt,
+                           true, false, nullptr);
+        out.append(_missionItemToJson(arrive, /*withAltitude*/ true));
+
+        // 2. Gimbal: DO_MOUNT_CONTROL, pitch(raw)/yaw from the capture panel.
+        MissionItem gimbal(seqNum++, MAV_CMD_DO_MOUNT_CONTROL, MAV_FRAME_MISSION,
+                           pitchRaw,        // param1 pitch (raw; -90 == straight down)
+                           0.0,             // param2 roll
+                           gimbalYaw,       // param3 yaw
+                           0.0, 0.0, 0.0,   // param4-6 unused
+                           MAV_MOUNT_MODE_MAVLINK_TARGETING,  // param7 mount mode
+                           true, false, nullptr);
+        out.append(_missionItemToJson(gimbal, /*withAltitude*/ false));
+
+        // 3. Capture: IMAGE_START_CAPTURE, take 1 photo.
+        MissionItem shoot(seqNum++, MAV_CMD_IMAGE_START_CAPTURE, MAV_FRAME_MISSION,
+                          0.0,                          // param1 reserved
+                          0.0,                          // param2 interval (none)
+                          1.0,                          // param3 take 1 photo
+                          photoPointCount + 1,          // param4 capture sequence number
+                          qQNaN(), qQNaN(), qQNaN(),    // param5-7 reserved
+                          true, false, nullptr);
+        out.append(_missionItemToJson(shoot, /*withAltitude*/ false));
+
+        // 4. Dwell: NAV_WAYPOINT, yaw = transect angle, hold from the capture panel.
+        MissionItem dwell(seqNum++, MAV_CMD_NAV_WAYPOINT, frame,
+                          holdSecs,        // param1 hold
+                          0.0, 0.0,        // param2 acceptance, param3 pass-through
+                          transectYawDeg,  // param4 yaw
+                          lat, lon, alt,
+                          true, false, nullptr);
+        out.append(_missionItemToJson(dwell, /*withAltitude*/ true));
+
+        ++photoPointCount;
+    }
+
+    temp->deleteLater();
+    return out;
+}
+
+bool CustomSurveyManager::saveRegionWaypointPlans(QObject* item, const QString& folder)
+{
+    SurveyComplexItem* survey = _surveyItem(item);
+    if (!survey) {
+        _setLastError(tr("Invalid survey."));
+        return false;
+    }
+    if (!isCustomSurvey(survey)) {
+        _setLastError(tr("Only custom surveys can be exported."));
+        return false;
+    }
+    PlanMasterController* controller = _itemController(survey);
+    if (!controller) {
+        _setLastError(tr("No plan controller available."));
+        return false;
+    }
+
+    const QDir dir(folder);
+    if (folder.isEmpty() || !dir.exists()) {
+        _setLastError(tr("Output folder does not exist: %1").arg(folder));
+        return false;
+    }
+
+    QString errorString;
+    const QList<SplitRegion> regions = _computeRegions(survey, errorString);
+    if (!errorString.isEmpty()) {
+        _setLastError(errorString);
+        return false;
+    }
+    if (regions.isEmpty()) {
+        _setLastError(tr("There are no regions to export."));
+        return false;
+    }
+
+    QJsonArray masterArray;
+    survey->save(masterArray);
+    if (masterArray.isEmpty()) {
+        _setLastError(tr("Unable to serialize the survey."));
+        return false;
+    }
+    const QJsonObject masterSurveyJson = masterArray.first().toObject();
+
+    // Yaw stamped on every generated waypoint is the survey's transect angle (the
+    // "Angle" set in the panel) — a single fixed heading regardless of the
+    // alternating physical direction of each pass.
+    const double transectYawDeg = survey->gridAngle()->rawValue().toDouble();
+
+    const QJsonObject templateRoot = controller->saveToJson().object();
+    QString baseName = QFileInfo(controller->currentPlanFile()).completeBaseName();
+    if (baseName.isEmpty()) {
+        baseName = QStringLiteral("custom-survey");
+    }
+
+    int saved = 0;
+    int totalPhotoPoints = 0;
+    for (int i = 0; i < regions.size(); ++i) {
+        int photoPoints = 0;
+        const QJsonArray waypointItems = _buildRegionWaypointItems(controller, masterSurveyJson, regions[i].polygon, transectYawDeg, photoPoints);
+        if (waypointItems.isEmpty()) {
+            continue;
+        }
+        totalPhotoPoints += photoPoints;
+
+        QJsonObject root = templateRoot;
+        QJsonObject mission = root.value(QStringLiteral("mission")).toObject();
+        mission[QStringLiteral("items")] = waypointItems;
+        root[QStringLiteral("mission")] = mission;
+
+        const QString filename = dir.absoluteFilePath(QStringLiteral("%1-region_%2-waypoints.plan").arg(baseName).arg(i + 1));
+        if (_writePlanFile(QJsonDocument(root), filename)) {
+            ++saved;
+        }
+    }
+
+    if (saved == 0 || totalPhotoPoints == 0) {
+        _setLastError(tr("No photo points were generated. Configure a camera and a non-zero trigger distance on the survey so it produces discrete capture points."));
+        return false;
+    }
+
+    _setLastError(tr("Exported %1 waypoint plan(s), %2 photo point(s) total, to %3.").arg(saved).arg(totalPhotoPoints).arg(folder));
+    return true;
 }
 
 bool CustomSurveyManager::saveRegionPlans(QObject* item, const QString& folder)
@@ -853,10 +1155,18 @@ QJsonObject CustomSurveyManager::_metadataForItem(QObject* item)
     ControlState& state = _stateFor(item);
 
     QJsonObject obj;
-    obj[QStringLiteral("version")]        = 5;
-    obj[QStringLiteral("regionCount")]    = state.regionCount;
-    obj[QStringLiteral("regionOffset")]   = state.regionOffset;
-    obj[QStringLiteral("sourceSequence")] = _sequenceNumber(item);
+    obj[QStringLiteral("version")]           = 6;
+    obj[QStringLiteral("regionCount")]       = state.regionCount;
+    obj[QStringLiteral("regionOffset")]      = state.regionOffset;
+    obj[QStringLiteral("sourceSequence")]    = _sequenceNumber(item);
+
+    // Individual-waypoint export settings. exportAsWaypoints is per-survey; the
+    // gimbal/hold capture values are shared (manager-level Facts) but written on
+    // each custom survey so a saved plan reopens with them.
+    obj[QStringLiteral("exportAsWaypoints")] = state.exportAsWaypoints;
+    obj[QStringLiteral("captureGimbalPitch")] = _captureGimbalPitchFact->rawValue().toDouble();
+    obj[QStringLiteral("captureGimbalYaw")]   = _captureGimbalYawFact->rawValue().toDouble();
+    obj[QStringLiteral("captureHold")]        = _captureHoldFact->rawValue().toDouble();
 
     // Control points are 2D map positions (no meaningful altitude). Save WITHOUT
     // altitude so the element count matches the loader, which reads them with
@@ -933,10 +1243,28 @@ void CustomSurveyManager::restoreFromPlanJson(PlanMasterController* controller, 
         return;
     }
 
+    // Capture settings are shared (manager-level Facts); restore them from the
+    // first custom survey that carries them. Suppress the dirty side effect so a
+    // freshly-loaded plan is not marked modified.
+    _suppressCaptureDirty = true;
+    for (auto it = customBySequence.constBegin(); it != customBySequence.constEnd(); ++it) {
+        const QJsonObject& cs = it.value();
+        if (cs.contains(QStringLiteral("captureGimbalPitch")) ||
+            cs.contains(QStringLiteral("captureGimbalYaw")) ||
+            cs.contains(QStringLiteral("captureHold"))) {
+            _captureGimbalPitchFact->setRawValue(cs.value(QStringLiteral("captureGimbalPitch")).toDouble(-90.0));
+            _captureGimbalYawFact->setRawValue(cs.value(QStringLiteral("captureGimbalYaw")).toDouble(0.0));
+            _captureHoldFact->setRawValue(cs.value(QStringLiteral("captureHold")).toDouble(2.0));
+            break;
+        }
+    }
+    _suppressCaptureDirty = false;
+
     auto parse = [](const QJsonObject& cs) {
         ControlState state;
         state.regionCount = cs.value(QStringLiteral("regionCount")).toInt(1);
         state.regionOffset = cs.value(QStringLiteral("regionOffset")).toDouble(0.0);
+        state.exportAsWaypoints = cs.value(QStringLiteral("exportAsWaypoints")).toBool(false);
         QString errorString;
         if (cs.contains(QStringLiteral("center"))) {
             QGeoCoordinate center;

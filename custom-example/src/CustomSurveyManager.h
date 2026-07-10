@@ -34,10 +34,13 @@
 #include <QtPositioning/QGeoCoordinate>
 
 #include "ActiveSplitter.h"
+#include "Fact.h"   // full type required: exposed via Q_PROPERTY(Fact*) below (moc needs a complete pointer metatype)
 
 class PlanMasterController;
 class SurveyComplexItem;
 class VisualMissionItem;
+class MissionItem;
+class FactMetaData;
 class QJsonDocument;
 
 class CustomSurveyManager : public QObject
@@ -45,6 +48,17 @@ class CustomSurveyManager : public QObject
     Q_OBJECT
     Q_PROPERTY(QString customSurveyName READ customSurveyName CONSTANT)
     Q_PROPERTY(QString lastError        READ lastError        NOTIFY lastErrorChanged)
+
+    // Per-photo-point capture settings for the "individual waypoints" export.
+    // These reuse the SAME Fact-backed UI controls as the core mission panels:
+    //  - captureGimbalPitch uses units "gimbal-degrees", so the field shows +90
+    //    for straight-down while rawValue()/the plan record -90 (identical to
+    //    CameraSection's gimbal pitch). See CameraSection.FactMetaData.json.
+    //  - captureGimbalYaw   uses units "deg" (same as CameraSection gimbal yaw).
+    //  - captureHold        uses units "secs" (same as NAV_WAYPOINT param1 "Hold").
+    Q_PROPERTY(Fact* captureGimbalPitch READ captureGimbalPitch CONSTANT)
+    Q_PROPERTY(Fact* captureGimbalYaw   READ captureGimbalYaw   CONSTANT)
+    Q_PROPERTY(Fact* captureHold        READ captureHold        CONSTANT)
 
 public:
     explicit CustomSurveyManager(QObject* parent = nullptr);
@@ -54,9 +68,17 @@ public:
     QString customSurveyName() const { return QStringLiteral("Custom Survey"); }
     QString lastError()        const { return _lastError; }
 
+    Fact* captureGimbalPitch() const { return _captureGimbalPitchFact; }
+    Fact* captureGimbalYaw()   const { return _captureGimbalYawFact; }
+    Fact* captureHold()        const { return _captureHoldFact; }
+
     // ---- Custom-survey flagging -------------------------------------------
     Q_INVOKABLE bool markCustomSurvey(QObject* item);
     Q_INVOKABLE bool isCustomSurvey  (QObject* item) const;
+
+    // ---- Individual-waypoint export toggle (persisted per survey) ----------
+    Q_INVOKABLE bool exportAsWaypoints   (QObject* item);
+    Q_INVOKABLE void setExportAsWaypoints(QObject* item, bool enabled);
 
     // ---- Region count / control points (live editing) ---------------------
     Q_INVOKABLE int            regionCount        (QObject* item);
@@ -79,7 +101,17 @@ public:
     Q_INVOKABLE QVariantList regionFlightPaths(QObject* item);
 
     // ---- Export -----------------------------------------------------------
+    // Writes one .plan per region, each region a stock survey ComplexItem.
     Q_INVOKABLE bool saveRegionPlans(QObject* item, const QString& folder);
+
+    // Writes one .plan per region, but each region's survey is EXPANDED into
+    // individual simple mission items. At every discrete photo point the survey
+    // would capture at (driven via Hover & Capture), we emit the 4-item sequence:
+    //   1. NAV_WAYPOINT  (yaw = transect angle, hold 0)          -> arrive
+    //   2. DO_MOUNT_CONTROL (pitch/yaw from the capture panel)   -> aim gimbal
+    //   3. IMAGE_START_CAPTURE                                   -> take photo
+    //   4. NAV_WAYPOINT  (yaw = transect angle, hold from panel) -> dwell
+    Q_INVOKABLE bool saveRegionWaypointPlans(QObject* item, const QString& folder);
 
     // ---- Plan-file hooks (called from CustomPlugin) -----------------------
     void decorateMissionJson(PlanMasterController* controller, QJsonObject& missionJson);
@@ -101,6 +133,7 @@ private:
         bool                    seeded = false;         ///< true once center/vertices are populated
         QGeoCoordinate          lastPolygonCenter;      ///< survey polygon centroid last seen; used to translate center+vertices when the whole survey is moved
         double                  regionOffset = 0.0;     ///< meters each region is inset inward from its shared (ray) edges to separate neighbors (n>1 only)
+        bool                    exportAsWaypoints = false; ///< export this survey expanded into individual mission items instead of a survey ComplexItem
     };
 
     // Casting / identity helpers
@@ -156,7 +189,32 @@ private:
                                                  const QJsonObject& masterSurveyJson,
                                                  const QList<QGeoCoordinate>& regionPolygon,
                                                  bool& terrainPending) const;
+
+    // Builds a throwaway, fully-configured SurveyComplexItem for one region from
+    // the master survey JSON (transects recomputed for the sub-polygon). Caller
+    // owns the returned object (deleteLater). Returns nullptr on failure.
+    SurveyComplexItem*    _buildRegionSurveyObject(PlanMasterController* controller,
+                                                   const QJsonObject& masterSurveyJson,
+                                                   const QList<QGeoCoordinate>& regionPolygon) const;
+
+    // Expands one region survey into the per-photo-point 4-item sequences and
+    // returns them as a JSON "items" array (simple items, doJumpId from 1). The
+    // transect yaw applied to every waypoint is passed in (survey grid angle).
+    QJsonArray            _buildRegionWaypointItems(PlanMasterController* controller,
+                                                    const QJsonObject& masterSurveyJson,
+                                                    const QList<QGeoCoordinate>& regionPolygon,
+                                                    double transectYawDeg,
+                                                    int& photoPointCount) const;
+
+    // Serializes one MissionItem (owned/temporary) to a plan "items" JSON object.
+    // For coordinate/waypoint items, appends the Altitude/AltitudeMode/
+    // AMSLAltAboveTerrain trio the way SimpleMissionItem::save() does.
+    QJsonObject           _missionItemToJson(const MissionItem& item, bool withAltitude) const;
+
     bool                  _writePlanFile(const QJsonDocument& document, const QString& filename);
+
+    void                  _createCaptureFacts();
+    void                  _markAllCustomSurveysDirty();
 
     // Misc
     double                _polygonArea(const QList<QGeoCoordinate>& coordinates) const;
@@ -172,4 +230,11 @@ private:
     QHash<QObject*, QString>                   _cachedRegionSig;   ///< input signature the memoized regions were computed from
     ActiveRegionSplitter                       _splitter;          ///< swappable division strategy
     QString                                    _lastError;
+
+    // Capture settings for the individual-waypoint export. Manager-owned Facts so
+    // the QML panel can bind the exact same FactControls the core panels use.
+    Fact*        _captureGimbalPitchFact = nullptr;   ///< units "gimbal-degrees": UI +90 == raw -90 (straight down)
+    Fact*        _captureGimbalYawFact   = nullptr;   ///< units "deg"
+    Fact*        _captureHoldFact        = nullptr;   ///< units "secs" (NAV_WAYPOINT hold)
+    bool         _suppressCaptureDirty   = false;     ///< true while restoring facts from a plan load, so it doesn't dirty the plan
 };

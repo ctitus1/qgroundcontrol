@@ -34,10 +34,12 @@ TransectStyleComplexItemEditor {
     property var    _missionItem:   missionItem
     property bool   _customSurvey:  customSurveyManager.isCustomSurvey(missionItem)
     property var    _customRegions: []
+    property bool   _exportAsWaypoints: false
 
     function _refreshCustomRegions() {
         _customSurvey = customSurveyManager.isCustomSurvey(missionItem)
         _customRegions = _customSurvey ? customSurveyManager.regionPolygons(missionItem) : []
+        _exportAsWaypoints = _customSurvey ? customSurveyManager.exportAsWaypoints(missionItem) : false
     }
 
     Component.onCompleted: _refreshCustomRegions()
@@ -202,6 +204,53 @@ TransectStyleComplexItemEditor {
                     }
                 }
 
+                // ===== CUSTOM SURVEY: individual-waypoint export =====
+                // When enabled, each region exports as expanded simple mission
+                // items instead of a survey ComplexItem. At every discrete photo
+                // point the survey captures at, a 4-item sequence is written:
+                // arrive (hold 0) -> gimbal -> capture -> dwell (hold below), all
+                // facing the survey transect angle.
+                QGCCheckBox {
+                    Layout.columnSpan:  2
+                    text:               qsTr("Export as individual waypoints")
+                    checked:            _exportAsWaypoints
+                    onClicked: {
+                        customSurveyManager.setExportAsWaypoints(missionItem, checked)
+                        _exportAsWaypoints = checked
+                    }
+                }
+
+                GridLayout {
+                    Layout.columnSpan:  2
+                    Layout.fillWidth:   true
+                    columns:            2
+                    columnSpacing:      _margin
+                    rowSpacing:         _margin
+                    visible:            _exportAsWaypoints
+
+                    // Same Fact-backed controls the core Camera/Waypoint panels use.
+                    // Gimbal pitch shows +90 for straight-down (records -90) exactly
+                    // like CameraSection, via the "gimbal-degrees" fact units.
+                    QGCLabel { text: qsTr("Gimbal pitch") }
+                    FactTextField {
+                        fact:               customSurveyManager.captureGimbalPitch
+                        Layout.fillWidth:   true
+                    }
+
+                    QGCLabel { text: qsTr("Gimbal yaw") }
+                    FactTextField {
+                        fact:               customSurveyManager.captureGimbalYaw
+                        Layout.fillWidth:   true
+                    }
+
+                    QGCLabel { text: qsTr("Hold") }
+                    FactTextField {
+                        fact:               customSurveyManager.captureHold
+                        showUnits:          true
+                        Layout.fillWidth:   true
+                    }
+                }
+
                 QGCLabel {
                     Layout.fillWidth:   true
                     wrapMode:           Text.WordWrap
@@ -212,7 +261,7 @@ TransectStyleComplexItemEditor {
 
                 QGCButton {
                     Layout.alignment:   Qt.AlignHCenter
-                    text:               qsTr("Export Region Plans")
+                    text:               _exportAsWaypoints ? qsTr("Export Waypoint Plans") : qsTr("Export Region Plans")
                     enabled:            missionItem.surveyAreaPolygon.isValid && _customRegions.length > 0
                     onClicked:          regionFolderDialog.openForLoad()
                 }
@@ -240,7 +289,11 @@ TransectStyleComplexItemEditor {
         selectFolder:   true
 
         onAcceptedForLoad: (folder) => {
-            customSurveyManager.saveRegionPlans(missionItem, folder)
+            if (customSurveyManager.exportAsWaypoints(missionItem)) {
+                customSurveyManager.saveRegionWaypointPlans(missionItem, folder)
+            } else {
+                customSurveyManager.saveRegionPlans(missionItem, folder)
+            }
             mainWindow.showMessageDialog(qsTr("Custom Survey"), customSurveyManager.lastError)
             _refreshCustomRegions()
             close()
