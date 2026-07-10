@@ -62,7 +62,6 @@ Item {
         _rebuildRegionVisuals(show)
 
         var count = show ? customSurveyManager.edgeControlPoints(_missionItem).length : 0
-        console.warn("CSQML _sync show", show, "count", count, "_controlCount", _controlCount, "_dragging", _dragging)
         if (count !== _controlCount) {
             _controlCount = count
             _rebuildControlVisuals(show)
@@ -101,7 +100,6 @@ Item {
     }
 
     function _createHandle(pointIndex, coordinate) {
-        console.warn("CSQML _createHandle idx", pointIndex, "coord", coordinate)
         // The indicator is a MapQuickItem -> add it to the map (addObject with a
         // mapControl arg calls map.addMapItem for us).
         var indicator = handleIndicatorComponent.createObject(map, { "coordinate": coordinate, "pointIndex": pointIndex })
@@ -238,26 +236,24 @@ Item {
             // still -1 at creation) and overwrote the center with an edge point.
             property bool _dragActive: false
 
-            onDragStart: { console.warn("CSQML dragStart idx", pointIndex); _dragActive = true; _root._dragging = true }
-            // On release, snap the (edge) handles onto their boundary positions.
+            onDragStart: { _dragActive = true; _root._dragging = true }
+            // On release, snap the (edge) handles back onto their ray midpoints.
             onDragStop: {
-                console.warn("CSQML dragStop idx", pointIndex)
                 _dragActive = false
                 _root._dragging = false
                 _root._updateHandlePositions()
             }
 
             onItemCoordinateChanged: {
-                console.warn("CSQML onItemCoordinateChanged idx", pointIndex, "_dragActive", _dragActive, "coord", itemCoordinate)
                 if (!_dragActive) {
                     return
                 }
-                // Store the drag. The center moves freely; edge cuts are
-                // projected onto the boundary by the manager (stored as a
-                // perimeter fraction) so regions update live. The marker follows
-                // the cursor during the drag and snaps to the edge on release
-                // (see onDragStop) — deriving the snapped point every frame here
-                // caused a geo<->screen feedback / polish loop.
+                // Store the drag. The center moves freely; an edge handle sets
+                // its ray's bearing from the center (the manager re-derives the
+                // boundary cut), so regions update live. The marker follows the
+                // cursor during the drag and snaps back onto its ray midpoint on
+                // release (see onDragStop) — re-deriving the snapped point every
+                // frame here caused a geo<->screen feedback / polish loop.
                 if (pointIndex < 0) {
                     customSurveyManager.setCenterControlPoint(_root._missionItem, itemCoordinate)
                 } else {

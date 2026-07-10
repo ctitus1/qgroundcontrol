@@ -83,10 +83,10 @@ signals:
 private:
     struct ControlState {
         int                     regionCount = 1;        ///< 1 == undivided
-        QGeoCoordinate          center;                 ///< interior apex control point
-        QList<double>           edgeParams;             ///< one boundary cut per region, stored as a perimeter fraction [0,1)
-        bool                    seeded = false;         ///< true once center/edges are populated
-        QGeoCoordinate          lastPolygonCenter;      ///< survey polygon centroid last seen; used to translate the center when the whole survey is moved
+        QGeoCoordinate          center;                 ///< interior apex the division rays radiate from
+        QList<QGeoCoordinate>   edgeVertices;           ///< one control vertex per region, stored as an absolute position; the cut is where the ray center->vertex meets the boundary
+        bool                    seeded = false;         ///< true once center/vertices are populated
+        QGeoCoordinate          lastPolygonCenter;      ///< survey polygon centroid last seen; used to translate center+vertices when the whole survey is moved
     };
 
     // Casting / identity helpers
@@ -106,11 +106,10 @@ private:
     // and follow the boundary automatically.
     void                  _onSurveyPolygonMoved(QObject* survey);
 
-    // Boundary <-> perimeter-fraction conversions for edge control points.
-    // A fraction of 0 is the first vertex; it increases with arc length,
-    // wrapping at 1.0 back to the start.
-    static QGeoCoordinate _boundaryCoordinate(const QList<QGeoCoordinate>& polygon, double param);
-    static double         _boundaryParam(const QList<QGeoCoordinate>& polygon, const QGeoCoordinate& coordinate);
+    // Cast a ray from center at the given bearing (deg) and return where it
+    // first meets the survey polygon boundary (the region cut). Invalid if the
+    // ray never exits (e.g. center outside the polygon).
+    static QGeoCoordinate _rayBoundaryIntersection(const QList<QGeoCoordinate>& polygon, const QGeoCoordinate& center, double azimuthDeg);
 
     // Region generation
     QList<SplitRegion>    _computeRegions(QObject* item, QString& errorString);
