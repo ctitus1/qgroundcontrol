@@ -150,6 +150,7 @@ private:
     QHash<int, ControlState>                   _pendingState;      ///< restored-by-sequence before the survey object exists
     QSet<QObject*>                             _customSurveyItems; ///< which surveys are custom
     QHash<QObject*, QList<SurveyComplexItem*>> _regionSurveys;     ///< per-master shadow surveys, one per region
+    QHash<QObject*, QJsonObject>               _lastMasterJson;    ///< cached master-survey JSON per master; skip shadow reloads when unchanged
     ActiveRegionSplitter                       _splitter;          ///< swappable division strategy
     QString                                    _lastError;
 };

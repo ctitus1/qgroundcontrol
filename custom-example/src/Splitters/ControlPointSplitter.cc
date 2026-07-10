@@ -221,6 +221,45 @@ QList<QPointF> insetRayEdges(const QList<QPointF>& wedge, double d)
     return dedupe(clipped);
 }
 
+// True if the simple polygon is convex (all turns the same way).
+bool isConvex(const QList<QPointF>& poly)
+{
+    const int m = poly.size();
+    if (m < 3) {
+        return false;
+    }
+    int sign = 0;
+    for (int i = 0; i < m; ++i) {
+        const QPointF u = poly[(i + 1) % m] - poly[i];
+        const QPointF v = poly[(i + 2) % m] - poly[(i + 1) % m];
+        const double cross = (u.x() * v.y()) - (u.y() * v.x());
+        if (std::abs(cross) < 1e-9) {
+            continue;   // collinear vertex
+        }
+        const int s = (cross > 0.0) ? 1 : -1;
+        if (sign == 0) {
+            sign = s;
+        } else if (s != sign) {
+            return false;
+        }
+    }
+    return true;
+}
+
+// Clip `subject` to the interior of a CONVEX, CCW-wound polygon `clip`
+// (Sutherland-Hodgman against every clip edge). Guarantees the result never
+// extends outside `clip`. Works for an arbitrary (even reflex) subject.
+QList<QPointF> clipToConvexPolygon(QList<QPointF> subject, const QList<QPointF>& clip)
+{
+    const int m = clip.size();
+    for (int j = 0; j < m && subject.size() >= 3; ++j) {
+        const QPointF a = clip[j];
+        const QPointF edge = clip[(j + 1) % m] - a;
+        subject = clipByHalfPlane(subject, a, QPointF(-edge.y(), edge.x()));   // left = interior for CCW
+    }
+    return subject;
+}
+
 } // anonymous namespace
 
 QList<SplitRegion> ControlPointSplitter::split(const SplitInput& input, QString& errorString) const
@@ -268,6 +307,10 @@ QList<SplitRegion> ControlPointSplitter::split(const SplitInput& input, QString&
 
     const int n = V.size();
     const int cutCount = cuts.size();
+    // Offsetting can push the reconnected vertices onto extended edges, i.e.
+    // outside the survey area. Clip each offset region back to the master so it
+    // can never exceed it. Only valid (exact) for a convex master.
+    const bool masterConvex = isConvex(V);
 
     QList<SplitRegion> regions;
     regions.reserve(cutCount);
@@ -276,21 +319,31 @@ QList<SplitRegion> ControlPointSplitter::split(const SplitInput& input, QString&
         const Cut& a = cuts[i];
         const Cut& b = cuts[(i + 1) % cutCount];
 
-        // Wedge = center -> cut(a) -> boundary vertices a..b -> cut(b).
+        // Wedge = center -> cut(a) -> boundary vertices on the CCW arc a..b -> cut(b).
         QList<QPointF> wedge;
         wedge.append(center);
         wedge.append(a.point);
 
-        int k = a.segment;
-        while (k != b.segment) {
-            k = (k + 1) % n;
-            wedge.append(V[k]);
+        // Number of boundary vertices to append walking CCW from a to b. The
+        // final (wrap) region has a AFTER b in perimeter order; when a and b fall
+        // on the SAME segment that wrap must still traverse the entire boundary
+        // rather than collapse to a sliver (the "last region flips" bug).
+        const bool wrap = a.perimPos > b.perimPos;
+        int steps = (((b.segment - a.segment) % n) + n) % n;
+        if (wrap && steps == 0) {
+            steps = n;
+        }
+        for (int s = 1; s <= steps; ++s) {
+            wedge.append(V[(a.segment + s) % n]);
         }
         wedge.append(b.point);
 
         wedge = dedupe(wedge);
         if (input.regionSeparation > 0.0) {
             wedge = insetRayEdges(wedge, input.regionSeparation);
+            if (masterConvex) {
+                wedge = dedupe(clipToConvexPolygon(wedge, V));
+            }
         }
         if (wedge.size() < 3 || std::abs(signedArea(wedge)) < 1.0 /* m^2 */) {
             continue;

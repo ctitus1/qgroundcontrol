@@ -74,14 +74,9 @@ Item {
             _updateHandlePositions()
         }
 
-        // Per-region flight paths are expensive (a survey grid per region), so
-        // debounce them: redraw shortly after edits settle, not every frame.
-        if (show) {
-            flightPathTimer.restart()
-        } else {
-            flightPathTimer.stop()
-            flightPathObjMgr.destroyObjects()
-        }
+        // Rebuild the per-region flight paths live so they track control-point
+        // drags and parameter changes as they happen (not only after settling).
+        _rebuildFlightPaths()
     }
 
     function _rebuildFlightPaths() {
@@ -144,7 +139,12 @@ Item {
             "mapControl":       map,
             "itemIndicator":    indicator,
             "itemCoordinate":   coordinate,
-            "pointIndex":       pointIndex
+            "pointIndex":       pointIndex,
+            // Keep the center dragger BELOW the survey's own center-drag handle
+            // (zOrderMapItems + 1) so grabbing the middle moves the whole survey
+            // (control points follow); the larger center ring around it stays
+            // grabbable to move just the division center.
+            "z":                (pointIndex < 0 ? QGroundControl.zOrderMapItems : (QGroundControl.zOrderMapItems + 1))
         })
         if (dragger) {
             controlObjMgr.addObject(dragger)
@@ -184,8 +184,9 @@ Item {
         target: _missionItem
         function onIsCurrentItemChanged() { _sync() }
         // Panel edits (grid angle, altitude, spacing, turnaround, ...) rebuild
-        // the master's transects and fire this; refresh the per-region grids too.
-        function onVisualTransectPointsChanged() { flightPathTimer.restart() }
+        // the master's transects and fire this; refresh the per-region grids too,
+        // live (e.g. while the angle slider is being dragged).
+        function onVisualTransectPointsChanged() { _rebuildFlightPaths() }
     }
 
     Connections {
@@ -236,14 +237,6 @@ Item {
     QGCDynamicObjectManager { id: controlObjMgr }
     QGCDynamicObjectManager { id: flightPathObjMgr }
 
-    // Debounce expensive per-region flight-path rebuilds until edits settle.
-    Timer {
-        id:       flightPathTimer
-        interval: 250
-        repeat:   false
-        onTriggered: _rebuildFlightPaths()
-    }
-
     // One region's transect flight path.
     Component {
         id: flightPathComponent
@@ -288,8 +281,10 @@ Item {
             property int  pointIndex: -1
             // Stable size drives BOTH the anchor and the marker. Binding
             // anchorPoint to sourceItem.width/height instead creates a
-            // MapQuickItem polish() loop (freeze/crash).
-            property real markerSize: ScreenTools.defaultFontPixelHeight * (pointIndex < 0 ? 1.5 : 1.1)
+            // MapQuickItem polish() loop (freeze/crash). The center is larger so
+            // its ring stays grabbable behind the survey centroid marker
+            // (z + 2, below the survey marker's z + 3).
+            property real markerSize: ScreenTools.defaultFontPixelHeight * (pointIndex < 0 ? 2.0 : 1.1)
 
             anchorPoint.x:  markerSize / 2
             anchorPoint.y:  markerSize / 2

@@ -142,6 +142,7 @@ void CustomSurveyManager::_attachSurvey(QObject* survey)
     connect(survey, &QObject::destroyed, this, [this](QObject* obj) {
         _stateBySurvey.remove(obj);
         _customSurveyItems.remove(obj);
+        _lastMasterJson.remove(obj);
         const QList<SurveyComplexItem*> shadows = _regionSurveys.take(obj);
         for (SurveyComplexItem* shadow : shadows) {
             if (shadow) {
@@ -174,13 +175,15 @@ bool CustomSurveyManager::_markCustomSurvey(QObject* item, bool setDirty)
         _customSurveyItems.insert(survey);
         _attachSurvey(survey);
 
-        // Follow whole-survey moves. When the survey polygon is translated (its
-        // center is dragged), QGCMapPolygon shifts every vertex by the same
-        // geodesic delta and emits centerChanged; we mirror that shift onto the
-        // interior center control point (the rays then follow automatically).
+        // Follow whole-survey moves/edits by translating the center and control
+        // vertices by the survey polygon's centroid delta. We listen to
+        // pathChanged (not centerChanged): during a center-drag translation
+        // QGCMapPolygon sets _center to the drag target itself, so the recomputed
+        // centroid matches and centerChanged is suppressed — but pathChanged
+        // still fires, so it's the reliable trigger for both moves and reshapes.
         if (QGCMapPolygon* polygon = survey->surveyAreaPolygon()) {
             _stateBySurvey[survey].lastPolygonCenter = polygon->center();
-            connect(polygon, &QGCMapPolygon::centerChanged, this, [this, survey]() {
+            connect(polygon, &QGCMapPolygon::pathChanged, this, [this, survey]() {
                 _onSurveyPolygonMoved(survey);
             });
         }
@@ -492,15 +495,24 @@ void CustomSurveyManager::_syncRegionSurveys(QObject* master, const QList<SplitR
             }
         }
         shadows.clear();
+        _lastMasterJson.remove(master);
         return;
     }
 
-    // Snapshot the master survey's parameters so each region inherits them.
+    // Snapshot the master survey's parameters so each region inherits them. The
+    // control points are plugin state (not part of the survey's serialization),
+    // so this JSON only changes when the master's parameters/polygon change —
+    // NOT on a control-point drag. Reloading it into every shadow is expensive,
+    // so we skip that when it's unchanged (this keeps live updates smooth) and
+    // only re-set each region's polygon, which is what actually moved.
     QJsonArray masterArray;
     masterSurvey->save(masterArray);
     const QJsonObject masterSurveyJson = masterArray.isEmpty() ? QJsonObject() : masterArray.first().toObject();
+    const bool paramsChanged = (_lastMasterJson.value(master) != masterSurveyJson);
+    _lastMasterJson[master] = masterSurveyJson;
 
     // Grow / shrink the shadow list to match the region count.
+    const int oldCount = shadows.size();
     while (shadows.size() < regions.size()) {
         shadows.append(new SurveyComplexItem(controller, /*flyView*/ false, QString()));
     }
@@ -510,12 +522,15 @@ void CustomSurveyManager::_syncRegionSurveys(QObject* master, const QList<SplitR
         }
     }
 
-    // Configure each shadow: master params + its own sub-polygon. Setting the
-    // polygon rebuilds that region's transect grid synchronously.
+    // Configure each shadow: (re)inherit master params only when they changed or
+    // the shadow is new; then set its sub-polygon, which rebuilds that region's
+    // transect grid synchronously.
     for (int i = 0; i < regions.size(); ++i) {
         SurveyComplexItem* shadow = shadows[i];
-        QString errorString;
-        shadow->load(masterSurveyJson, 1, errorString);
+        if (paramsChanged || i >= oldCount) {
+            QString errorString;
+            shadow->load(masterSurveyJson, 1, errorString);
+        }
 
         QGCMapPolygon* polygon = shadow->surveyAreaPolygon();
         polygon->beginReset();
