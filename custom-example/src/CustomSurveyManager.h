@@ -66,6 +66,10 @@ public:
     Q_INVOKABLE void           setCenterControlPoint(QObject* item, const QGeoCoordinate& coordinate);
     Q_INVOKABLE void           setEdgeControlPoint  (QObject* item, int index, const QGeoCoordinate& coordinate);
 
+    // Inward separation (meters) between adjacent regions; default 0, n>1 only.
+    Q_INVOKABLE double         regionOffset       (QObject* item);
+    Q_INVOKABLE void           setRegionOffset    (QObject* item, double meters);
+
     // ---- Regions (computed live from control points) ----------------------
     Q_INVOKABLE QVariantList regionPolygons(QObject* item);
 
@@ -92,6 +96,7 @@ private:
         QList<QGeoCoordinate>   edgeVertices;           ///< one control vertex per region, stored as an absolute position; the cut is where the ray center->vertex meets the boundary
         bool                    seeded = false;         ///< true once center/vertices are populated
         QGeoCoordinate          lastPolygonCenter;      ///< survey polygon centroid last seen; used to translate center+vertices when the whole survey is moved
+        double                  regionOffset = 0.0;     ///< meters each region is inset inward from its shared (ray) edges to separate neighbors (n>1 only)
     };
 
     // Casting / identity helpers

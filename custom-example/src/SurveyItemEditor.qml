@@ -161,6 +161,28 @@ TransectStyleComplexItemEditor {
                     }
                 }
 
+                // Inward gap between adjacent regions (n>1 only). Regions still
+                // reach the survey boundary; only their shared edges pull in.
+                RowLayout {
+                    Layout.fillWidth:   true
+                    spacing:            ScreenTools.defaultFontPixelWidth
+                    visible:            regionCountSpinBox.value > 1
+
+                    QGCLabel { text: qsTr("Region offset") }
+
+                    Item { Layout.fillWidth: true }
+
+                    QGCTextField {
+                        id:                     regionOffsetField
+                        Layout.preferredWidth:  ScreenTools.defaultFontPixelWidth * 12
+                        showUnits:              true
+                        unitsLabel:             QGroundControl.unitsConversion.appSettingsHorizontalDistanceUnitsString
+                        // Displayed in the app's distance units; stored as meters.
+                        text:                   Number(QGroundControl.unitsConversion.metersToAppSettingsHorizontalDistanceUnits(customSurveyManager.regionOffset(missionItem))).toFixed(1)
+                        onEditingFinished:      customSurveyManager.setRegionOffset(missionItem, Number(QGroundControl.unitsConversion.appSettingsHorizontalDistanceUnitsToMeters(parseFloat(text))))
+                    }
+                }
+
                 Repeater {
                     model: _customRegions
 

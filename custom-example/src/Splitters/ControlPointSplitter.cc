@@ -113,6 +113,114 @@ QList<QPointF> dedupe(const QList<QPointF>& poly)
     return out;
 }
 
+// Keep the part of `poly` on the inward side of the line through `linePoint`
+// with unit inward normal `nrm`. Sutherland-Hodgman half-plane clip — robust at
+// any orientation (never flips or overshoots).
+QList<QPointF> clipByHalfPlane(const QList<QPointF>& poly, const QPointF& linePoint, const QPointF& nrm)
+{
+    QList<QPointF> out;
+    const int m = poly.size();
+    if (m < 3) {
+        return out;
+    }
+    auto side = [&](const QPointF& p) {
+        return ((p.x() - linePoint.x()) * nrm.x()) + ((p.y() - linePoint.y()) * nrm.y());
+    };
+    QPointF s = poly.last();
+    double ss = side(s);
+    for (const QPointF& e : poly) {
+        const double se = side(e);
+        if (se >= 0.0) {
+            if (ss < 0.0) {
+                const double t = ss / (ss - se);
+                out.append(QPointF(s.x() + (t * (e.x() - s.x())), s.y() + (t * (e.y() - s.y()))));
+            }
+            out.append(e);
+        } else if (ss >= 0.0) {
+            const double t = ss / (ss - se);
+            out.append(QPointF(s.x() + (t * (e.x() - s.x())), s.y() + (t * (e.y() - s.y()))));
+        }
+        s = e;
+        ss = se;
+    }
+    return out;
+}
+
+// Intersect line (o1 + t*dir1) with line (o2 + s*dir2). false if parallel.
+bool lineIntersect(const QPointF& o1, const QPointF& dir1, const QPointF& o2, const QPointF& dir2, QPointF& out)
+{
+    const double denom = (dir1.x() * dir2.y()) - (dir1.y() * dir2.x());
+    if (std::abs(denom) < 1e-12) {
+        return false;
+    }
+    const QPointF diff = o2 - o1;
+    const double t = ((diff.x() * dir2.y()) - (diff.y() * dir2.x())) / denom;
+    out = QPointF(o1.x() + (t * dir1.x()), o1.y() + (t * dir1.y()));
+    return true;
+}
+
+// A wedge is [center, cutA, boundary..., cutB], with the boundary walked CCW so
+// the region occupies the CCW sweep from ray A (center->cutA) to ray B
+// (center->cutB). Separate it from its neighbors by pulling ONLY its two ray
+// edges inward by `d`, leaving the survey-boundary edges in place.
+//
+// We offset each ray *line* inward and reconnect (apex = the two offset lines'
+// intersection; each cut slides along its boundary edge). Deriving the inward
+// normals from the CCW sweep (+90 deg off ray A, -90 deg off ray B) keeps the
+// apex on the correct side even when the sweep exceeds 180 deg — a half-plane
+// clip would instead eat the far side of the region "past the center".
+QList<QPointF> insetRayEdges(const QList<QPointF>& wedge, double d)
+{
+    const int n = wedge.size();
+    if (n < 3 || d <= 0.0) {
+        return wedge;
+    }
+
+    const QPointF C = wedge[0];
+    auto unit = [](const QPointF& v) {
+        const double len = std::hypot(v.x(), v.y());
+        return (len > 1e-9) ? QPointF(v.x() / len, v.y() / len) : QPointF(0.0, 0.0);
+    };
+    const QPointF ua = unit(wedge[1] - C);       // ray A direction (center -> cutA)
+    const QPointF ub = unit(wedge[n - 1] - C);   // ray B direction (center -> cutB)
+
+    const QPointF na(-ua.y(), ua.x());   // +90 deg into the CCW sweep, off ray A
+    const QPointF nb(ub.y(), -ub.x());   // -90 deg into the CCW sweep, off ray B
+    const QPointF pa(C.x() + (d * na.x()), C.y() + (d * na.y()));   // point on offset ray-A line
+    const QPointF pb(C.x() + (d * nb.x()), C.y() + (d * nb.y()));   // point on offset ray-B line
+
+    QPointF apex, newA, newB;
+    if (lineIntersect(pa, ua, pb, ub, apex) &&                                    // inset apex
+        lineIntersect(pa, ua, wedge[1], wedge[2] - wedge[1], newA) &&             // ray A x first boundary edge
+        lineIntersect(pb, ub, wedge[n - 2], wedge[n - 1] - wedge[n - 2], newB)) { // ray B x last boundary edge
+        QList<QPointF> out;
+        out.append(apex);
+        out.append(newA);
+        for (int i = 2; i <= n - 2; ++i) {
+            out.append(wedge[i]);
+        }
+        out.append(newB);
+        out = dedupe(out);
+        const double a0 = signedArea(wedge);
+        const double a1 = signedArea(out);
+        if (out.size() >= 3 && (a0 > 0.0) == (a1 > 0.0) && std::abs(a1) >= 1.0) {
+            return out;
+        }
+    }
+
+    // Degenerate primary (rays ~colinear => ~180 deg straight divider). Shifting
+    // a straight divider is a single half-plane clip and is safe for a convex
+    // sweep; for a reflex sweep, clipping would eat the far side, so leave the
+    // region un-inset instead.
+    const double crossAB = (ua.x() * ub.y()) - (ua.y() * ub.x());   // >0: sweep<180, <0: >180
+    if (crossAB < 0.0) {
+        return wedge;
+    }
+    QList<QPointF> clipped = clipByHalfPlane(wedge, pa, na);
+    clipped = clipByHalfPlane(clipped, pb, nb);
+    return dedupe(clipped);
+}
+
 } // anonymous namespace
 
 QList<SplitRegion> ControlPointSplitter::split(const SplitInput& input, QString& errorString) const
@@ -181,6 +289,9 @@ QList<SplitRegion> ControlPointSplitter::split(const SplitInput& input, QString&
         wedge.append(b.point);
 
         wedge = dedupe(wedge);
+        if (input.regionSeparation > 0.0) {
+            wedge = insetRayEdges(wedge, input.regionSeparation);
+        }
         if (wedge.size() < 3 || std::abs(signedArea(wedge)) < 1.0 /* m^2 */) {
             continue;
         }

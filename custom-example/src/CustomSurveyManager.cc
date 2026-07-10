@@ -340,6 +340,30 @@ QVariantList CustomSurveyManager::edgeControlPoints(QObject* item)
     return out;
 }
 
+double CustomSurveyManager::regionOffset(QObject* item)
+{
+    if (!_surveyItem(item)) {
+        return 0.0;
+    }
+    return _stateFor(item).regionOffset;
+}
+
+void CustomSurveyManager::setRegionOffset(QObject* item, double meters)
+{
+    if (!_surveyItem(item)) {
+        return;
+    }
+    if (!(meters >= 0.0)) {   // clamp negatives and NaN to 0
+        meters = 0.0;
+    }
+    ControlState& state = _stateFor(item);
+    state.regionOffset = meters;
+    if (PlanMasterController* controller = _itemController(item)) {
+        controller->setDirty(true);
+    }
+    emit customSurveyChanged(item);
+}
+
 void CustomSurveyManager::setCenterControlPoint(QObject* item, const QGeoCoordinate& coordinate)
 {
     if (!_surveyItem(item) || !coordinate.isValid()) {
@@ -419,8 +443,9 @@ QList<SplitRegion> CustomSurveyManager::_computeRegions(QObject* item, QString& 
     // Cut = where the ray from the center through each (fixed) control vertex
     // meets the boundary.
     SplitInput input;
-    input.masterPolygon = polygon;
-    input.center        = center;
+    input.masterPolygon    = polygon;
+    input.center           = center;
+    input.regionSeparation = state.regionOffset;
     for (const QGeoCoordinate& vertex : std::as_const(state.edgeVertices)) {
         const QGeoCoordinate cut = _rayBoundaryIntersection(polygon, center, center.azimuthTo(vertex));
         if (cut.isValid()) {
@@ -689,6 +714,7 @@ QJsonObject CustomSurveyManager::_metadataForItem(QObject* item)
     QJsonObject obj;
     obj[QStringLiteral("version")]        = 5;
     obj[QStringLiteral("regionCount")]    = state.regionCount;
+    obj[QStringLiteral("regionOffset")]   = state.regionOffset;
     obj[QStringLiteral("sourceSequence")] = _sequenceNumber(item);
 
     if (state.center.isValid()) {
@@ -763,6 +789,7 @@ void CustomSurveyManager::restoreFromPlanJson(PlanMasterController* controller, 
     auto parse = [](const QJsonObject& cs) {
         ControlState state;
         state.regionCount = cs.value(QStringLiteral("regionCount")).toInt(1);
+        state.regionOffset = cs.value(QStringLiteral("regionOffset")).toDouble(0.0);
         QString errorString;
         if (cs.contains(QStringLiteral("center"))) {
             QGeoCoordinate center;

@@ -26,9 +26,10 @@
 
 /// Input to a split operation. All coordinates are geographic (WGS84).
 struct SplitInput {
-    QList<QGeoCoordinate>   masterPolygon;  ///< The traced survey area polygon (>= 3 vertices)
-    QGeoCoordinate          center;         ///< Interior control point the division radiates from
-    QList<QGeoCoordinate>   edgePoints;     ///< Draggable control points; one region per point
+    QList<QGeoCoordinate>   masterPolygon;      ///< The traced survey area polygon (>= 3 vertices)
+    QGeoCoordinate          center;             ///< Interior control point the division radiates from
+    QList<QGeoCoordinate>   edgePoints;         ///< Draggable control points; one region per point
+    double                  regionSeparation = 0.0; ///< Inset each region inward from its shared (ray) edges by this many meters; the survey-boundary edges are NOT inset. 0 = touching.
 };
 
 /// A single generated sub-region.
