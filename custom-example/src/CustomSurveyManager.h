@@ -115,6 +115,12 @@ private:
     ControlState&         _stateFor(QObject* item);
     void                  _seedControlPoints(QObject* item, ControlState& state, int count);
 
+    // Re-place each edge control vertex at the midpoint of its ray (center ->
+    // boundary), preserving the ray azimuth (so the division is unchanged). Used
+    // after a load so the blue handles sit at their proper midpoints even if the
+    // saved vertices were left off-midpoint by a prior center move.
+    void                  _snapEdgeVerticesToMidpoints(QObject* item, ControlState& state);
+
     // Translate the center when the whole survey polygon is moved, so the
     // division rides along with the survey. Edge cuts are perimeter fractions
     // and follow the boundary automatically.

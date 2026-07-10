@@ -141,6 +141,9 @@ void CustomSurveyManager::_attachSurvey(QObject* survey)
         state = _pendingState.take(seq);
     }
     _stateBySurvey.insert(survey, state);
+    // If this survey carried restored control points, snap them to their ray
+    // midpoints now that the polygon exists (no-op for a fresh, untraced survey).
+    _snapEdgeVerticesToMidpoints(survey, _stateBySurvey[survey]);
 
     connect(survey, &QObject::destroyed, this, [this](QObject* obj) {
         _stateBySurvey.remove(obj);
@@ -238,6 +241,17 @@ void CustomSurveyManager::_onSurveyPolygonMoved(QObject* survey)
     const QGeoCoordinate oldCenter = state.lastPolygonCenter;
     state.lastPolygonCenter = newCenter;
 
+    // Only a rigid whole-survey CENTER drag carries the control points along.
+    // Any OTHER polygon edit (a vertex reshape/resize, KML load, ...) must leave
+    // the center and every control vertex exactly where they are: the rays just
+    // re-project through the (fixed) vertices onto the new boundary, so the
+    // regions update but the handles do not move. So recompute and return
+    // without translating anything.
+    if (!surveyItem->surveyAreaPolygon()->centerDrag()) {
+        emit customSurveyChanged(survey);
+        return;
+    }
+
     if (!oldCenter.isValid()) {
         return;                 // first observation: nothing to translate against yet
     }
@@ -246,10 +260,11 @@ void CustomSurveyManager::_onSurveyPolygonMoved(QObject* survey)
         return;                 // negligible movement
     }
 
-    // Same rigid geodesic translation QGCMapPolygon applies to its vertices:
-    // move the center AND every control vertex so the whole division rides
-    // along with the survey. (A center-only drag goes through
-    // setCenterControlPoint instead and leaves the vertices stationary.)
+    // Rigid translation: shift the center AND every control vertex by the same
+    // geodesic delta the polygon applied to its own vertices, so the whole
+    // division rides along. The regions/transects then shift by exactly this
+    // delta too — signal the visuals to translate the already-built lines
+    // (cheap) rather than recompute.
     const double azimuth = oldCenter.azimuthTo(newCenter);
     if (state.center.isValid()) {
         state.center = state.center.atDistanceAndAzimuth(distance, azimuth);
@@ -259,18 +274,7 @@ void CustomSurveyManager::_onSurveyPolygonMoved(QObject* survey)
             state.edgeVertices[i] = state.edgeVertices[i].atDistanceAndAzimuth(distance, azimuth);
         }
     }
-
-    // A whole-survey CENTER drag is a rigid translation: the control points just
-    // shifted by (distance, azimuth), so the regions/transects shift by exactly
-    // the same delta. Tell the visuals to translate the already-built lines
-    // (cheap) rather than recompute. Any other polygon edit (a vertex reshape,
-    // resize, KML load, ...) genuinely changes region shape, so fall back to a
-    // full recompute.
-    if (surveyItem->surveyAreaPolygon()->centerDrag()) {
-        emit customSurveyTranslated(survey, distance, azimuth);
-    } else {
-        emit customSurveyChanged(survey);
-    }
+    emit customSurveyTranslated(survey, distance, azimuth);
 }
 
 //=============================================================================
@@ -307,6 +311,31 @@ void CustomSurveyManager::_seedControlPoints(QObject* item, ControlState& state,
     state.regionCount = count;
     state.seeded = true;
     state.lastPolygonCenter = survey->surveyAreaPolygon()->center();
+}
+
+void CustomSurveyManager::_snapEdgeVerticesToMidpoints(QObject* item, ControlState& state)
+{
+    SurveyComplexItem* survey = _surveyItem(item);
+    if (!survey) {
+        return;
+    }
+    const QList<QGeoCoordinate> polygon = survey->surveyAreaPolygon()->coordinateList();
+    if (polygon.size() < 3 || !state.center.isValid()) {
+        return;
+    }
+    // Only the ray AZIMUTH defines a region cut (see _computeRegions), so moving
+    // each vertex along its own ray to the center<->boundary midpoint leaves the
+    // division untouched while putting the handle back where the user expects it.
+    for (int i = 0; i < state.edgeVertices.size(); ++i) {
+        if (!state.edgeVertices[i].isValid()) {
+            continue;
+        }
+        const double azimuth = state.center.azimuthTo(state.edgeVertices[i]);
+        const QGeoCoordinate cut = _rayBoundaryIntersection(polygon, state.center, azimuth);
+        if (cut.isValid()) {
+            state.edgeVertices[i] = state.center.atDistanceAndAzimuth(state.center.distanceTo(cut) * 0.5, azimuth);
+        }
+    }
 }
 
 int CustomSurveyManager::regionCount(QObject* item)
@@ -829,14 +858,20 @@ QJsonObject CustomSurveyManager::_metadataForItem(QObject* item)
     obj[QStringLiteral("regionOffset")]   = state.regionOffset;
     obj[QStringLiteral("sourceSequence")] = _sequenceNumber(item);
 
+    // Control points are 2D map positions (no meaningful altitude). Save WITHOUT
+    // altitude so the element count matches the loader, which reads them with
+    // altitudeRequired=false. JsonHelper::_loadGeoCoordinate enforces an EXACT
+    // element count (2 vs 3), so a writeAltitude/altitudeRequired mismatch makes
+    // the load silently fail — which previously wiped the restored vertices and
+    // forced a re-seed to defaults.
     if (state.center.isValid()) {
         QJsonValue value;
-        JsonHelper::saveGeoCoordinate(state.center, true /*writeAltitude*/, value);
+        JsonHelper::saveGeoCoordinate(state.center, false /*writeAltitude*/, value);
         obj[QStringLiteral("center")] = value;
     }
     if (!state.edgeVertices.isEmpty()) {
         QJsonValue value;
-        JsonHelper::saveGeoCoordinateArray(state.edgeVertices, true /*writeAltitude*/, value);
+        JsonHelper::saveGeoCoordinateArray(state.edgeVertices, false /*writeAltitude*/, value);
         obj[QStringLiteral("edgeVertices")] = value;
     }
     return obj;
@@ -932,6 +967,7 @@ void CustomSurveyManager::restoreFromPlanJson(PlanMasterController* controller, 
             if (SurveyComplexItem* survey = _surveyItem(item)) {
                 state.lastPolygonCenter = survey->surveyAreaPolygon()->center();
             }
+            _snapEdgeVerticesToMidpoints(item, state);
             matched.insert(seq);
             emit customSurveyChanged(item);
         }
