@@ -142,6 +142,12 @@ void CustomSurveyManager::_attachSurvey(QObject* survey)
     connect(survey, &QObject::destroyed, this, [this](QObject* obj) {
         _stateBySurvey.remove(obj);
         _customSurveyItems.remove(obj);
+        const QList<SurveyComplexItem*> shadows = _regionSurveys.take(obj);
+        for (SurveyComplexItem* shadow : shadows) {
+            if (shadow) {
+                shadow->deleteLater();
+            }
+        }
     });
 }
 
@@ -439,6 +445,72 @@ QVariantList CustomSurveyManager::regionPolygons(QObject* item)
         map[QStringLiteral("area")]        = _polygonArea(regions[i].polygon);
         map[QStringLiteral("polygon")]     = _coordinatesToVariantList(regions[i].polygon);
         out << map;
+    }
+    return out;
+}
+
+void CustomSurveyManager::_syncRegionSurveys(QObject* master, const QList<SplitRegion>& regions)
+{
+    SurveyComplexItem* masterSurvey = _surveyItem(master);
+    PlanMasterController* controller = _itemController(master);
+    if (!masterSurvey || !controller) {
+        return;
+    }
+
+    QList<SurveyComplexItem*>& shadows = _regionSurveys[master];
+
+    // Undivided: no per-region shadows.
+    if (regions.size() < 2) {
+        for (SurveyComplexItem* shadow : std::as_const(shadows)) {
+            if (shadow) {
+                shadow->deleteLater();
+            }
+        }
+        shadows.clear();
+        return;
+    }
+
+    // Snapshot the master survey's parameters so each region inherits them.
+    QJsonArray masterArray;
+    masterSurvey->save(masterArray);
+    const QJsonObject masterSurveyJson = masterArray.isEmpty() ? QJsonObject() : masterArray.first().toObject();
+
+    // Grow / shrink the shadow list to match the region count.
+    while (shadows.size() < regions.size()) {
+        shadows.append(new SurveyComplexItem(controller, /*flyView*/ false, QString()));
+    }
+    while (shadows.size() > regions.size()) {
+        if (SurveyComplexItem* extra = shadows.takeLast()) {
+            extra->deleteLater();
+        }
+    }
+
+    // Configure each shadow: master params + its own sub-polygon. Setting the
+    // polygon rebuilds that region's transect grid synchronously.
+    for (int i = 0; i < regions.size(); ++i) {
+        SurveyComplexItem* shadow = shadows[i];
+        QString errorString;
+        shadow->load(masterSurveyJson, 1, errorString);
+
+        QGCMapPolygon* polygon = shadow->surveyAreaPolygon();
+        polygon->beginReset();
+        polygon->clear();
+        polygon->appendVertices(regions[i].polygon);
+        polygon->endReset();
+    }
+}
+
+QVariantList CustomSurveyManager::regionFlightPaths(QObject* item)
+{
+    QString errorString;
+    const QList<SplitRegion> regions = _computeRegions(item, errorString);
+    _syncRegionSurveys(item, regions);
+
+    QVariantList out;
+    for (SurveyComplexItem* shadow : std::as_const(_regionSurveys[item])) {
+        if (shadow) {
+            out << shadow->property("visualTransectPoints");
+        }
     }
     return out;
 }

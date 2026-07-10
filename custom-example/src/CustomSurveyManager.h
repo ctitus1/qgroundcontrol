@@ -69,6 +69,11 @@ public:
     // ---- Regions (computed live from control points) ----------------------
     Q_INVOKABLE QVariantList regionPolygons(QObject* item);
 
+    // Per-region flight paths. Each region is backed by its own SurveyComplexItem
+    // (a manager-owned "shadow" survey) so it computes a real transect grid.
+    // Returns one entry per region: the transect polyline (list of coordinates).
+    Q_INVOKABLE QVariantList regionFlightPaths(QObject* item);
+
     // ---- Export -----------------------------------------------------------
     Q_INVOKABLE bool saveRegionPlans(QObject* item, const QString& folder);
 
@@ -114,6 +119,11 @@ private:
     // Region generation
     QList<SplitRegion>    _computeRegions(QObject* item, QString& errorString);
 
+    // Keep one shadow SurveyComplexItem per region, in sync with the region
+    // polygons (params mirrored from the master for now). These are what render
+    // per-region flight paths and, later, carry per-region parameters.
+    void                  _syncRegionSurveys(QObject* master, const QList<SplitRegion>& regions);
+
     // Mission-JSON matching (adapted from the prior working implementation)
     int                   _sequenceNumberFromMissionObject(const QJsonObject& itemObject) const;
     bool                  _isSurveyMissionObject(const QJsonObject& itemObject) const;
@@ -131,9 +141,10 @@ private:
     QVariantList          _coordinatesToVariantList(const QList<QGeoCoordinate>& coordinates) const;
     void                  _setLastError(const QString& errorString);
 
-    QHash<QObject*, ControlState>   _stateBySurvey;     ///< live per-survey control state
-    QHash<int, ControlState>        _pendingState;      ///< restored-by-sequence before the survey object exists
-    QSet<QObject*>                  _customSurveyItems; ///< which surveys are custom
-    ActiveRegionSplitter            _splitter;          ///< swappable division strategy
-    QString                         _lastError;
+    QHash<QObject*, ControlState>              _stateBySurvey;     ///< live per-survey control state
+    QHash<int, ControlState>                   _pendingState;      ///< restored-by-sequence before the survey object exists
+    QSet<QObject*>                             _customSurveyItems; ///< which surveys are custom
+    QHash<QObject*, QList<SurveyComplexItem*>> _regionSurveys;     ///< per-master shadow surveys, one per region
+    ActiveRegionSplitter                       _splitter;          ///< swappable division strategy
+    QString                                    _lastError;
 };

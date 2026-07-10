@@ -45,6 +45,7 @@ Item {
     property int    _controlCount:  0
     property var    _handles:       []      ///< live control-point indicator objects
     property bool   _dragging:      false   ///< true while a control point is being dragged
+    property bool   _divided:       false   ///< true when showing region visuals instead of the master grid
 
     signal clicked(int sequenceNumber)
 
@@ -62,6 +63,7 @@ Item {
         _rebuildRegionVisuals(show)
 
         var count = show ? customSurveyManager.edgeControlPoints(_missionItem).length : 0
+        _divided = show && count >= 2
         if (count !== _controlCount) {
             _controlCount = count
             _rebuildControlVisuals(show)
@@ -70,6 +72,32 @@ Item {
             // survey was dragged). Nudge the existing handles to follow — but
             // never while the user is actively dragging one.
             _updateHandlePositions()
+        }
+
+        // Per-region flight paths are expensive (a survey grid per region), so
+        // debounce them: redraw shortly after edits settle, not every frame.
+        if (show) {
+            flightPathTimer.restart()
+        } else {
+            flightPathTimer.stop()
+            flightPathObjMgr.destroyObjects()
+        }
+    }
+
+    function _rebuildFlightPaths() {
+        flightPathObjMgr.destroyObjects()
+        if (!_shouldShow()) {
+            return
+        }
+        var paths = customSurveyManager.regionFlightPaths(_missionItem)
+        for (var i = 0; i < paths.length; i++) {
+            if (!paths[i] || paths[i].length < 2) {
+                continue
+            }
+            var obj = flightPathComponent.createObject(map, { "pathPoints": paths[i], "regionIndex": i })
+            if (obj) {
+                flightPathObjMgr.addObject(obj, map)
+            }
         }
     }
 
@@ -145,7 +173,7 @@ Item {
     }
 
     Component.onCompleted:   _sync()
-    Component.onDestruction: { regionObjMgr.destroyObjects(); controlObjMgr.destroyObjects(); _handles = [] }
+    Component.onDestruction: { regionObjMgr.destroyObjects(); controlObjMgr.destroyObjects(); flightPathObjMgr.destroyObjects(); _handles = [] }
 
     Connections {
         target: _missionItem ? _missionItem.surveyAreaPolygon : null
@@ -155,6 +183,9 @@ Item {
     Connections {
         target: _missionItem
         function onIsCurrentItemChanged() { _sync() }
+        // Panel edits (grid angle, altitude, spacing, turnaround, ...) rebuild
+        // the master's transects and fire this; refresh the per-region grids too.
+        function onVisualTransectPointsChanged() { flightPathTimer.restart() }
     }
 
     Connections {
@@ -166,19 +197,68 @@ Item {
         }
     }
 
-    // Stock survey visuals (polygon + transects). `object` comes from context.
-    TransectStyleMapVisuals {
-        map:                _root.map
-        polygonInteractive: _root.polygonInteractive
-        interactive:        _root.interactive
-        vehicle:            _root.vehicle
-        opacity:            _root.opacity
+    // Not divided: stock survey visuals (polygon + white transect grid + click
+    // to select). `object` comes from context. Also used whenever the item is
+    // not current, so click-to-select still works.
+    Loader {
+        active: !_root._divided
+        sourceComponent: Component {
+            TransectStyleMapVisuals {
+                map:                _root.map
+                polygonInteractive: _root.polygonInteractive
+                interactive:        _root.interactive
+                vehicle:            _root.vehicle
+                opacity:            _root.opacity
+                onClicked:          (sequenceNumber) => _root.clicked(sequenceNumber)
+            }
+        }
+    }
 
-        onClicked: (sequenceNumber) => _root.clicked(sequenceNumber)
+    // Divided: only the editable survey-area polygon (no white transect grid) —
+    // the per-region colored paths replace it.
+    Loader {
+        active: _root._divided
+        sourceComponent: Component {
+            QGCMapPolygonVisuals {
+                mapControl:         _root.map
+                mapPolygon:         _root._missionItem.surveyAreaPolygon
+                interactive:        _root.polygonInteractive && _root._missionItem.isCurrentItem && _root.interactive
+                borderWidth:        1
+                borderColor:        "black"
+                interiorColor:      QGroundControl.globalPalette.surveyPolygonInterior
+                altColor:           QGroundControl.globalPalette.surveyPolygonTerrainCollision
+                interiorOpacity:    0.5 * _root.opacity
+            }
+        }
     }
 
     QGCDynamicObjectManager { id: regionObjMgr }
     QGCDynamicObjectManager { id: controlObjMgr }
+    QGCDynamicObjectManager { id: flightPathObjMgr }
+
+    // Debounce expensive per-region flight-path rebuilds until edits settle.
+    Timer {
+        id:       flightPathTimer
+        interval: 250
+        repeat:   false
+        onTriggered: _rebuildFlightPaths()
+    }
+
+    // One region's transect flight path.
+    Component {
+        id: flightPathComponent
+
+        MapPolyline {
+            property var pathPoints:  []
+            property int regionIndex: 0
+
+            path:       pathPoints
+            line.color: ["#2F80ED", "#27AE60", "#F2994A", "#EB5757"][regionIndex % 4]
+            line.width: 3
+            opacity:    _root.opacity
+            z:          QGroundControl.zOrderMapItems + 3
+        }
+    }
 
     // Colored, semi-transparent fill for each sub-region.
     Component {
