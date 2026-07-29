@@ -893,16 +893,9 @@ QJsonArray CustomSurveyManager::_buildRegionWaypointItems(PlanMasterController* 
         const double lon = wp->param6();
         const double alt = wp->param7();
 
-        // 1. Arrive: NAV_WAYPOINT, yaw = transect angle, hold 0.
-        MissionItem arrive(seqNum++, MAV_CMD_NAV_WAYPOINT, frame,
-                           0.0,             // param1 hold
-                           0.0, 0.0,        // param2 acceptance, param3 pass-through
-                           transectYawDeg,  // param4 yaw
-                           lat, lon, alt,
-                           true, false, nullptr);
-        out.append(_missionItemToJson(arrive, /*withAltitude*/ true));
-
-        // 2. Gimbal: DO_MOUNT_CONTROL, pitch(raw)/yaw from the capture panel.
+        // 1. Aim gimbal: DO_MOUNT_CONTROL, pitch(raw)/yaw from the capture panel.
+        //    Emitted first so the gimbal is already pointed before the vehicle
+        //    arrives at (and dwells over) the photo location.
         MissionItem gimbal(seqNum++, MAV_CMD_DO_MOUNT_CONTROL, MAV_FRAME_MISSION,
                            pitchRaw,        // param1 pitch (raw; -90 == straight down)
                            0.0,             // param2 roll
@@ -911,6 +904,15 @@ QJsonArray CustomSurveyManager::_buildRegionWaypointItems(PlanMasterController* 
                            MAV_MOUNT_MODE_MAVLINK_TARGETING,  // param7 mount mode
                            true, false, nullptr);
         out.append(_missionItemToJson(gimbal, /*withAltitude*/ false));
+
+        // 2. Fly to location: NAV_WAYPOINT, yaw = transect angle, hold 0.
+        MissionItem arrive(seqNum++, MAV_CMD_NAV_WAYPOINT, frame,
+                           0.0,             // param1 hold
+                           0.0, 0.0,        // param2 acceptance, param3 pass-through
+                           transectYawDeg,  // param4 yaw
+                           lat, lon, alt,
+                           true, false, nullptr);
+        out.append(_missionItemToJson(arrive, /*withAltitude*/ true));
 
         // 3. Capture: IMAGE_START_CAPTURE, take 1 photo.
         MissionItem shoot(seqNum++, MAV_CMD_IMAGE_START_CAPTURE, MAV_FRAME_MISSION,
