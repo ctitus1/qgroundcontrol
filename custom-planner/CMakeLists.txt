@@ -14,7 +14,7 @@ set(CUSTOM_LIBRARIES "" CACHE INTERNAL "" FORCE)
 
 option(QGC_PLANNER_SMOKE_TEST "Enable the offline planner function check" OFF)
 if(QGC_PLANNER_SMOKE_TEST)
-    set_source_files_properties(${CMAKE_CURRENT_SOURCE_DIR}/src/CustomPlugin.cc
+    set_source_files_properties(${CMAKE_CURRENT_SOURCE_DIR}/src/CustomPlugin.cc ${CMAKE_SOURCE_DIR}/src/main.cc
         DIRECTORY ${CMAKE_SOURCE_DIR}
         PROPERTIES COMPILE_DEFINITIONS QGC_PLANNER_SMOKE_TEST)
     set(CUSTOM_SOURCES ${CUSTOM_SOURCES} ${CMAKE_CURRENT_SOURCE_DIR}/tests/PlannerSmoke.cc CACHE INTERNAL "" FORCE)

@@ -2,6 +2,7 @@
 
 #include "ComplexMissionItem.h"
 #include <QVariantMap>
+#include <QJsonArray>
 
 class ChimeraPlanner;
 class SurveyComplexItem;
@@ -11,6 +12,9 @@ class ChimeraMissionItem : public ComplexMissionItem
 {
     Q_OBJECT
     Q_MOC_INCLUDE("QGCMapPolygon.h")
+    Q_PROPERTY(bool splitPart READ splitPart NOTIFY changed)
+    Q_PROPERTY(double splitPosition READ splitPosition WRITE setSplitPosition NOTIFY splitPositionChanged)
+    Q_PROPERTY(QGeoCoordinate splitCoordinate READ splitCoordinate NOTIFY splitPositionChanged)
     Q_PROPERTY(QString kind READ kind CONSTANT)
     Q_PROPERTY(QVariantMap values READ values NOTIFY changed)
     Q_PROPERTY(QVariantList route READ route NOTIFY changed)
@@ -21,6 +25,12 @@ class ChimeraMissionItem : public ComplexMissionItem
     Q_PROPERTY(QGeoCoordinate centerCoordinate READ centerCoordinate WRITE setCoordinate NOTIFY changed)
 public:
     ChimeraMissionItem(PlanMasterController* master, bool flyView, const QString& kind, ChimeraPlanner* planner);
+    bool splitPart() const { return !_frozen.isEmpty(); }
+    double splitPosition() const { return _splitPosition; }
+    void setSplitPosition(double position);
+    QGeoCoordinate splitCoordinate() const;
+    Q_INVOKABLE QString splitSurvey();
+    Q_INVOKABLE void clearInspections() { _inspections.clear(); rebuild(); }
     QString kind() const { return _kind; }
     QVariantMap values() const { return _values; }
     QVariantList route() const { return _route; }
@@ -56,8 +66,8 @@ public:
     int sequenceNumber() const override { return _sequence; }
     int lastSequenceNumber() const override { return _sequence + qMax(1, _commands.size()) - 1; }
     double specifiedFlightSpeed() override { return _values.value("speed").toDouble(); }
-    double specifiedGimbalYaw() override { return 0; }
-    double specifiedGimbalPitch() override { return _values.value("pitch").toDouble(); }
+    double specifiedGimbalYaw() override { return isSurveyItem() ? 0 : qQNaN(); }
+    double specifiedGimbalPitch() override { return isSurveyItem() ? _values.value("pitch").toDouble() : qQNaN(); }
     double specifiedVehicleYaw() override { return _values.value("yaw").toDouble(); }
     bool exitCoordinateSameAsEntry() const override { return _kind != "survey"; }
     void setDirty(bool dirty) override;
@@ -72,6 +82,7 @@ public:
     double additionalTimeDelay() const override { return _kind == "survey" ? 0 : _values.value("delay").toDouble(); }
 signals:
     void changed();
+    void splitPositionChanged();
 private:
     void rebuild();
     void moveInspectionPoints(const QGeoCoordinate& from, const QGeoCoordinate& to);
@@ -84,6 +95,10 @@ private:
     QVariantList _route;
     QVariantList _inspections;
     QList<MissionItem*> _commands;
+    QJsonArray _frozen;
+    QJsonArray _generated;
+    bool _resume = false;
+    double _splitPosition = 1;
     QString _error;
     QGeoCoordinate _position;
     QGeoCoordinate _lastCenter;

@@ -29,7 +29,8 @@ Item {
         if (block.isCurrentItem && block.kind === "survey") {
             for (var corners of (block.preview.footprints || [])) add(footprint, {path: corners})
             var path = block.preview.path || []
-            for (var i = 0; i < path.length; ++i) add(marker, {coordinate: path[i], label: String(i + 1)})
+            for (var i = 0; i < path.length; ++i) add(marker, {coordinate: path[i], label: "", routePoint: i})
+            if (block.splitCoordinate.isValid) add(marker, {coordinate: block.splitCoordinate, label: "Split", selected: true})
             for (var inspection of block.inspections) {
                 for (var point of inspection.points) {
                     add(marker, {coordinate: QtPositioning.coordinate(point.latitude, point.longitude), label: point.roi ? "ROI" : "I"})
@@ -42,6 +43,7 @@ Item {
     Connections {
         target: root.block
         function onChanged() { timer.restart() }
+        function onSplitPositionChanged() { timer.restart() }
         function onIsCurrentItemChanged() { timer.restart() }
     }
     Timer { id: timer; interval: 50; onTriggered: root.refresh() }
@@ -74,22 +76,33 @@ Item {
     QGCMapPolygonVisuals {
         mapControl: root.map
         mapPolygon: root.block.surveyAreaPolygon
-        interactive: root.interactive && root.block.isCurrentItem && root.block.kind === "survey"
+        interactive: root.interactive && root.block.isCurrentItem && root.block.kind === "survey" && !root.block.splitPart
         visible: root.block.kind === "survey"
         borderWidth: 2; borderColor: "white"; interiorColor: "#2080ff"; interiorOpacity: 0.15
     }
-    Component { id: line; MapPolyline { z: QGroundControl.zOrderMapItems + 1; line.color: "#00d8ef"; line.width: 3 } }
+    Component { id: line; MapPolyline { z: QGroundControl.zOrderMapItems + 1; line.color: "white"; line.width: 3 } }
     Component { id: footprint; MapPolygon { z: QGroundControl.zOrderMapItems; color: "#10ffb040"; border.color: "#ffb040"; border.width: 1 } }
     Component {
         id: marker
         MapQuickItem {
+            id: routeMarker
             z: QGroundControl.zOrderMapItems + 2
             property string label
-            anchorPoint.x: 12; anchorPoint.y: 12
-            sourceItem: Rectangle {
-                width: Math.max(24, title.implicitWidth + 6); height: 24; radius: 12; color: "#303030"
-                Text { id: title; anchors.centerIn: parent; text: label; color: "white" }
-                MouseArea { anchors.fill: parent; onClicked: root.clicked(root.block.sequenceNumber) }
+            property int routePoint: -1
+            property bool selected: false
+            anchorPoint.x: indicator.anchorPointX
+            anchorPoint.y: indicator.anchorPointY
+            sourceItem: MissionItemIndexLabel {
+                id: indicator
+                label: routeMarker.label
+                index: routeMarker.routePoint >= 0 ? routeMarker.routePoint + 1 : -1
+                checked: routeMarker.selected
+                highlightSelected: true
+                onClicked: {
+                    if (!root.interactive) return
+                    root.clicked(root.block.sequenceNumber)
+                    if (routeMarker.routePoint >= 0) root.block.splitPosition = routeMarker.routePoint
+                }
             }
         }
     }

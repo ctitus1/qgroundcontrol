@@ -11,6 +11,9 @@
 #include <QQmlContext>
 #include <QCoreApplication>
 #include <QTimer>
+#include <QQuickWindow>
+#include <QQuickItem>
+#include <QEventLoop>
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <stdexcept>
@@ -48,6 +51,7 @@ void schedulePlannerSmoke(QQmlApplicationEngine* engine, ChimeraPlanner*)
             QList<MissionItem*> commands;
             fiducial->appendMissionItems(commands, &owner);
             check(commands.last()->command() == MAV_CMD_NAV_DELAY && commands.last()->param1() == 45, "Fiducial delay until");
+            for (auto* command : commands) check(command->command() != MAV_CMD_DO_MOUNT_CONTROL && command->command() != MAV_CMD_DO_SET_ROI_NONE, "No fiducial gimbal command");
             for (auto* command : commands) if (command->command() == MAV_CMD_NAV_WAYPOINT)
                 check(command->param1() == 0 && command->param4() == 23, "Fiducial waypoint has no hold");
             commands.clear(); survey->appendMissionItems(commands, &owner);
@@ -102,11 +106,66 @@ void schedulePlannerSmoke(QQmlApplicationEngine* engine, ChimeraPlanner*)
             mapWidget = map.createWithInitialProperties({{"map", QVariant::fromValue(mapObject)}}, &context);
             check(mapWidget, map.errorString()); delete mapWidget; delete mapObject;
             check(QGCCorePlugin::instance()->missionUploadError(&plan).isEmpty(), "Native upload validation");
-            mission->insertComplexMissionItem("Chimera fiducial", origin, 4);
+            survey->clearInspections();
+            const auto unsplitPath = survey->preview()["path"].toList();
+            survey->setSplitPosition(1.5);
+            const auto splitPoint = survey->splitCoordinate();
+            check(survey->splitSurvey().isEmpty(), "Split survey");
+            auto* continuation = qobject_cast<ChimeraMissionItem*>(mission->visualItems()->get(4));
+            check(continuation && continuation->splitPart() && survey->splitPart(), "Two native survey parts");
+            check(survey->exitCoordinate().distanceTo(splitPoint) < 0.01 && continuation->coordinate().distanceTo(splitPoint) < 0.01, "Shared split endpoint");
+            check(continuation->exitCoordinate().distanceTo(unsplitPath.last().value<QGeoCoordinate>()) < 0.01, "Original survey end preserved");
+            commands.clear(); continuation->appendMissionItems(commands, &owner);
+            int firstWaypoint = -1, arm = -1;
+            for (int i = 0; i < commands.size(); ++i) {
+                auto* c = commands[i];
+                if (c->command() == MAV_CMD_NAV_WAYPOINT) { if (firstWaypoint < 0) firstWaypoint = i; check(c->param4() == 37, "Continuation heading"); }
+                if (c->command() == MAV_CMD_NAV_DELAY && c->param1() == 0) arm = i;
+            }
+            check(firstWaypoint >= 0 && arm > firstWaypoint && commands[arm-1]->command() == MAV_CMD_DO_MOUNT_CONTROL, "Return before rearming search");
+            mission->insertSimpleMissionItem(splitPoint.atDistanceAndAzimuth(20, 90), 4);
+            auto* vantage = qobject_cast<ChimeraMissionItem*>(mission->insertComplexMissionItem("Chimera vantage", origin, 6));
+            commands.clear(); vantage->appendMissionItems(commands, &owner);
+            check(commands.first()->command() == MAV_CMD_NAV_DELAY && commands.first()->param1() == 1, "Vantage starts with autonomy marker");
+            for (auto* c : commands) check(c->command() != MAV_CMD_DO_MOUNT_CONTROL && c->command() != MAV_CMD_DO_SET_ROI_NONE, "No vantage gimbal command");
+            saved = plan.saveToJson().object();
+            check(mission->load(saved["mission"].toObject(), error), error);
+            check(mission->visualItems()->count() == 7, "Split and manual waypoint round trip");
+            survey = qobject_cast<ChimeraMissionItem*>(mission->visualItems()->get(3));
+            continuation = qobject_cast<ChimeraMissionItem*>(mission->visualItems()->get(5));
+            check(survey && continuation && survey->exitCoordinate().distanceTo(continuation->coordinate()) < 0.01, "Split boundary after reload");
+            for (int itemIndex : {2, 3, 6}) {
+                auto* item = qobject_cast<ChimeraMissionItem*>(mission->visualItems()->get(itemIndex));
+                context.setContextProperty("missionItem", item);
+                context.setContextProperty("availableWidth", 240);
+                auto* panel = qobject_cast<QQuickItem*>(editor.create(&context)); check(panel, editor.errorString());
+                QQuickWindow window;
+                window.setColor(QColor("#303030"));
+                panel->setParentItem(window.contentItem());
+                window.resize(240, 1800); window.show();
+                QEventLoop events; QTimer::singleShot(100, &events, &QEventLoop::quit); events.exec();
+                window.resize(240, int(panel->implicitHeight()) + 10);
+                QTimer::singleShot(100, &events, &QEventLoop::quit); events.exec();
+                int fieldCount = 0;
+                QList<QQuickItem*> visualItems = panel->childItems();
+                for (int visualIndex = 0; visualIndex < visualItems.size(); ++visualIndex) {
+                    auto* field = visualItems[visualIndex];
+                    visualItems.append(field->childItems());
+                    if (!field->objectName().startsWith("field_")) continue;
+                    ++fieldCount;
+                    const auto position = field->mapToItem(panel, QPointF());
+                    check(position.x() >= -1 && position.x() + field->width() <= 241 && field->width() >= 100, "Input fits narrow panel: " + field->objectName());
+                }
+                check(fieldCount == (item->kind() == "survey" ? 14 : 6), "All input fields rendered: " + item->kind() + " count=" + QString::number(fieldCount));
+                check(window.grabWindow().save("/tmp/qgc-panel-" + item->kind() + ".png"), "Panel screenshot");
+                delete panel;
+            }
+            mission->insertComplexMissionItem("Chimera fiducial", origin, 7);
             check(!QGCCorePlugin::instance()->missionUploadError(&plan).isEmpty(), "Fiducial order validation");
-            survey->setValue("pitch", -5);
-            check(survey->readyForSaveState() == VisualMissionItem::NotReadyForSaveData, "Invalid geometry blocked");
-            qInfo() << "PLANNER_SMOKE_PASS: grouped blocks, delay, offset route, ROI resume, move, persistence, QML";
+            auto* invalidSurvey = qobject_cast<ChimeraMissionItem*>(mission->insertComplexMissionItem("Chimera survey", origin, 8));
+            invalidSurvey->setValue("pitch", -5);
+            check(invalidSurvey->readyForSaveState() == VisualMissionItem::NotReadyForSaveData, "Invalid geometry blocked");
+            qInfo() << "PLANNER_SMOKE_PASS: blocks, no-gimbal markers, split/resume, persistence, narrow panels, map QML";
             QCoreApplication::exit(0);
         } catch (const std::exception& error) {
             qCritical() << "PLANNER_SMOKE_FAIL:" << error.what(); QCoreApplication::exit(1);

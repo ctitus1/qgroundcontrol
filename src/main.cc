@@ -77,6 +77,9 @@ int main(int argc, char *argv[])
     QString systemIdStr = QString();
     bool hasSystemId = false;
     bool bypassRunGuard = false;
+#ifdef QGC_PLANNER_SMOKE_TEST
+    bypassRunGuard = qEnvironmentVariableIsSet("QGC_PLANNER_SMOKE");
+#endif
 
     bool stressUnitTests = false;       // Stress test unit tests
     bool quietWindowsAsserts = false;   // Don't let asserts pop dialog boxes

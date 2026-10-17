@@ -91,6 +91,13 @@ void ChimeraMissionItem::setSequenceNumber(int sequence)
 void ChimeraMissionItem::moveInspectionPoints(const QGeoCoordinate& from, const QGeoCoordinate& to)
 {
     if (!from.isValid() || !to.isValid()) return;
+    for (int i = 0; i < _frozen.size(); ++i) {
+        auto item = _frozen[i].toObject();
+        if (item["command"].toInt() != MAV_CMD_NAV_WAYPOINT) continue;
+        auto params = item["params"].toArray();
+        const auto moved = QGeoCoordinate(params[4].toDouble(), params[5].toDouble()).atDistanceAndAzimuth(from.distanceTo(to), from.azimuthTo(to));
+        params[4] = moved.latitude(); params[5] = moved.longitude(); item["params"] = params; _frozen[i] = item;
+    }
     const double distance = from.distanceTo(to), azimuth = from.azimuthTo(to);
     for (auto& entry : _inspections) {
         auto block = entry.toMap(); auto points = block["points"].toList();
@@ -129,6 +136,7 @@ void ChimeraMissionItem::setValue(const QString& key, double value)
         setCoordinate(c);
         return;
     }
+    if (splitPart() && key != "speed") return;
     if (!_values.contains(key) || _values[key] == value) return;
     _values[key] = value;
     rebuild();
@@ -183,7 +191,7 @@ void ChimeraMissionItem::rebuild()
     qDeleteAll(_commands); _commands.clear(); _route.clear(); _error.clear(); _preview.clear();
     const double altitude = _values["altitude"].toDouble(), yaw = _values["yaw"].toDouble();
     const double speed = _values["speed"].toDouble(), pitch = _values["pitch"].toDouble();
-    if (altitude <= 0 || speed <= 0 || yaw < 0 || yaw >= 360 || pitch < -90 || pitch >= 0)
+    if (altitude <= 0 || speed <= 0 || yaw < 0 || yaw >= 360 || (isSurveyItem() && (pitch < -90 || pitch >= 0)))
         _error = tr("Use positive altitude and speed, heading 0 to 359.99, and pitch -90 to below 0.");
     auto cmd = [this](MAV_CMD command, double p1 = 0, double p2 = 0, double p3 = 0) {
         auto* item = new MissionItem(0, command, MAV_FRAME_MISSION, p1,p2,p3,0,0,0,
@@ -206,8 +214,32 @@ void ChimeraMissionItem::rebuild()
         _survey->setProperty("chimeraSurvey", _values);
         QObject owner;
         QList<MissionItem*> generated; QVariantList path;
-        if (_planner->buildSurvey(_survey, generated, &owner, path, _error)) {
-            _preview = _planner->preview(_survey);
+        bool built = true;
+        if (splitPart()) {
+            for (const auto& value : _frozen) {
+                auto* item = new MissionItem(&owner);
+                if (!item->load(value.toObject(), 0, _error)) { built = false; break; }
+                if (item->command() != MAV_CMD_NAV_WAYPOINT && item->command() != MAV_CMD_DO_SET_CAM_TRIGG_DIST) {
+                    _error = tr("Invalid command in a split survey."); built = false; break;
+                }
+                generated.append(item);
+                if (item->command() == MAV_CMD_NAV_WAYPOINT) path.append(QVariant::fromValue(QGeoCoordinate(item->param5(), item->param6(), item->param7())));
+            }
+            if (path.size() < 2) { _error = tr("A split survey needs at least two route points."); built = false; }
+            for (const auto& value : path) {
+                const auto c = value.value<QGeoCoordinate>();
+                if (!c.isValid() || !std::isfinite(c.altitude()) || c.altitude() <= 0) {
+                    _error = tr("Invalid coordinate in a split survey."); built = false;
+                }
+            }
+            _preview = {{"path", path}};
+        } else {
+            built = _planner->buildSurvey(_survey, generated, &owner, path, _error);
+            if (built) _preview = _planner->preview(_survey);
+        }
+        _generated = {};
+        if (built) {
+            for (auto* item : generated) { QJsonObject json; item->save(json); _generated.append(json); }
             for (const auto& value : _inspections) {
                 const auto b = value.toMap();
                 if (b["checkpoint"].toInt() < 0 || b["checkpoint"].toInt() >= path.size())
@@ -219,7 +251,13 @@ void ChimeraMissionItem::rebuild()
                         _error = tr("Check the inspection coordinates, altitude, and heading.");
                 }
             }
-            cmd(MAV_CMD_DO_SET_ROI_NONE); restore();
+            cmd(MAV_CMD_DO_SET_CAM_TRIGG_DIST, 0);
+            cmd(MAV_CMD_DO_SET_ROI_NONE);
+            if (_resume && !path.isEmpty()) {
+                cmd(MAV_CMD_DO_CHANGE_SPEED, 1, speed, -1);
+                nav(path.first().value<QGeoCoordinate>(), yaw);
+            }
+            restore();
             int checkpoint = -1;
             double trigger = 0;
             for (auto* item : generated) {
@@ -246,12 +284,10 @@ void ChimeraMissionItem::rebuild()
     } else if (_error.isEmpty()) {
         _position.setAltitude(altitude);
         if (!_position.isValid() || _values["delay"].toDouble() <= 1) _error = tr("Set a valid position and a delay until greater than 1 second.");
+        if (_kind == "vantage") cmd(MAV_CMD_NAV_DELAY, 1);
         cmd(MAV_CMD_DO_SET_CAM_TRIGG_DIST, 0);
-        cmd(MAV_CMD_DO_SET_ROI_NONE);
         cmd(MAV_CMD_DO_CHANGE_SPEED, 1, speed, -1);
-        if (_kind == "vantage") { cmd(MAV_CMD_DO_MOUNT_CONTROL, pitch); cmd(MAV_CMD_NAV_DELAY, 1); }
         nav(_position, yaw);
-        cmd(MAV_CMD_DO_MOUNT_CONTROL, pitch);
         cmd(MAV_CMD_NAV_DELAY, _values["delay"].toDouble());
     }
     if (!_error.isEmpty()) { qDeleteAll(_commands); _commands.clear(); }
@@ -280,7 +316,7 @@ void ChimeraMissionItem::rebuild()
     emit ComplexMissionItem::boundingCubeChanged();
     _isIncomplete = !_error.isEmpty();
     setDirty(true);
-    emit changed(); emit isIncompleteChanged(); emit readyForSaveStateChanged();
+    emit changed(); emit splitPositionChanged(); emit isIncompleteChanged(); emit readyForSaveStateChanged();
     emit coordinateChanged(coordinate()); emit exitCoordinateChanged(exitCoordinate());
     emit amslEntryAltChanged(amslEntryAlt()); emit amslExitAltChanged(amslExitAlt());
     emit minAMSLAltitudeChanged(); emit maxAMSLAltitudeChanged(); emit complexDistanceChanged();
@@ -299,13 +335,14 @@ void ChimeraMissionItem::save(QJsonArray& items)
 {
     QJsonArray polygon;
     for (const auto& c : surveyAreaPolygon()->coordinateList()) polygon.append(QJsonArray{c.latitude(), c.longitude()});
-    items.append(QJsonObject{{"type", "ComplexItem"}, {"complexItemType", "chimera-" + _kind}, {"version", 1},
+    items.append(QJsonObject{{"type", "ComplexItem"}, {"complexItemType", "chimera-" + _kind}, {"version", splitPart() ? 2 : 1},
         {"values", QJsonObject::fromVariantMap(_values)}, {"position", QJsonArray{_position.latitude(), _position.longitude()}},
-        {"polygon", polygon}, {"inspections", QJsonArray::fromVariantList(_inspections)}});
+        {"polygon", polygon}, {"frozenRoute", _frozen}, {"resume", _resume}, {"inspections", QJsonArray::fromVariantList(_inspections)}});
 }
 bool ChimeraMissionItem::load(const QJsonObject& json, int sequence, QString& error)
 {
-    if (json["version"].toInt() != 1 || !json["values"].isObject() || !json["inspections"].isArray()) {
+    const int version = json["version"].toInt();
+    if ((version != 1 && version != 2) || (version == 2 && json["frozenRoute"].toArray().isEmpty()) || !json["values"].isObject() || !json["inspections"].isArray()) {
         error = tr("Invalid Chimera block format or version."); return false;
     }
     {
@@ -323,9 +360,74 @@ bool ChimeraMissionItem::load(const QJsonObject& json, int sequence, QString& er
         for (const auto& p : json["polygon"].toArray()) { const auto a = p.toArray(); polygon.append(QGeoCoordinate(a[0].toDouble(), a[1].toDouble())); }
         surveyAreaPolygon()->setPath(polygon);
         _inspections = json["inspections"].toArray().toVariantList();
+        _frozen = json["frozenRoute"].toArray();
+        _resume = json["resume"].toBool();
         _sequence = sequence;
     }
     rebuild();
     error = _error;
     return error.isEmpty();
+}
+
+void ChimeraMissionItem::setSplitPosition(double position)
+{
+    if (!std::isfinite(position) || _splitPosition == position) return;
+    _splitPosition = position;
+    emit splitPositionChanged();
+}
+
+QGeoCoordinate ChimeraMissionItem::splitCoordinate() const
+{
+    const auto path = _preview.value("path").toList();
+    if (path.size() < 2 || _splitPosition < 0 || _splitPosition >= path.size() - 1) return {};
+    const int index = int(_splitPosition);
+    const auto from = path[index].value<QGeoCoordinate>(), to = path[index + 1].value<QGeoCoordinate>();
+    auto point = from.atDistanceAndAzimuth(from.distanceTo(to) * (_splitPosition - index), from.azimuthTo(to));
+    point.setAltitude(from.altitude());
+    return point;
+}
+
+QString ChimeraMissionItem::splitSurvey()
+{
+    const auto checkpoint = splitCoordinate();
+    if (!isSurveyItem() || !_error.isEmpty() || !checkpoint.isValid() || _splitPosition <= 0)
+        return tr("Choose a split point between the start and end of the survey.");
+    if (!_inspections.isEmpty()) return tr("Remove the embedded inspections before splitting this survey.");
+    auto* controller = _masterController->missionController();
+    int index = -1;
+    for (int i = 1; i < controller->visualItems()->count(); ++i) if (controller->visualItems()->get(i) == this) index = i;
+    if (index < 0) return tr("The survey is not in this mission.");
+    int waypoint = -1, cut = -1;
+    double trigger = 0;
+    for (int i = 0; i < _generated.size(); ++i) {
+        const auto item = _generated[i].toObject();
+        if (item["command"].toInt() == MAV_CMD_DO_SET_CAM_TRIGG_DIST) trigger = item["params"].toArray()[0].toDouble();
+        if (item["command"].toInt() == MAV_CMD_NAV_WAYPOINT && ++waypoint == int(_splitPosition)) { cut = i; break; }
+    }
+    if (cut < 0) return tr("The split point is not on this survey.");
+    auto endpoint = _generated[cut].toObject();
+    auto params = endpoint["params"].toArray();
+    params[4] = checkpoint.latitude(); params[5] = checkpoint.longitude(); endpoint["params"] = params;
+    MissionItem triggerItem(0, MAV_CMD_DO_SET_CAM_TRIGG_DIST, MAV_FRAME_MISSION, 0,0,0,0,0,0,0,true,false);
+    QJsonObject stop; triggerItem.save(stop);
+    triggerItem.setParam1(trigger);
+    QJsonObject restart; triggerItem.save(restart);
+    QJsonArray first, second;
+    for (int i = 0; i <= cut; ++i) first.append(_generated[i]);
+    if (_splitPosition != int(_splitPosition)) first.append(endpoint);
+    first.append(stop);
+    second.append(endpoint); second.append(restart);
+    for (int i = cut + 1; i < _generated.size(); ++i) second.append(_generated[i]);
+    QJsonArray saved; save(saved);
+    auto json = saved.first().toObject(); json["frozenRoute"] = second; json["resume"] = true; json["version"] = 2;
+    auto* continuation = qobject_cast<ChimeraMissionItem*>(controller->insertComplexMissionItem("Chimera survey", centerCoordinate(), index + 1));
+    if (!continuation) return tr("Could not create the survey continuation.");
+    QString error;
+    if (!continuation->load(json, continuation->sequenceNumber(), error)) {
+        controller->removeVisualItem(index + 1); return error;
+    }
+    _frozen = first;
+    rebuild();
+    controller->setCurrentPlanViewSeqNum(sequenceNumber(), true);
+    return {};
 }
