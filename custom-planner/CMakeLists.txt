@@ -2,6 +2,9 @@ set_property(DIRECTORY ${CMAKE_SOURCE_DIR} APPEND PROPERTY COMPILE_DEFINITIONS
     QGC_CUSTOM_BUILD CUSTOMHEADER="CustomPlugin.h" CUSTOMCLASS=CustomPlugin)
 set(QGC_RESOURCES ${CMAKE_CURRENT_SOURCE_DIR}/planner.qrc CACHE STRING "Custom resources" FORCE)
 set(CUSTOM_SOURCES
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/FleetPlanner.cc
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/FleetPlanner.h
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/Splitters/ControlPointSplitter.cc
     ${CMAKE_CURRENT_SOURCE_DIR}/src/CustomPlugin.cc
     ${CMAKE_CURRENT_SOURCE_DIR}/src/CustomPlugin.h
     ${CMAKE_CURRENT_SOURCE_DIR}/src/ChimeraPlanner.cc

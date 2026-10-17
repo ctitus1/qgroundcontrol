@@ -11,6 +11,7 @@ Item {
     property var vehicle
     property bool interactive: true
     property var block: object
+    property bool masterDomain: chimeraFleet.enabled && chimeraFleet.selected === 0 && block.kind === "survey" && block.fleetRegion === -1
     property var pools: ({})
     property var used: ({})
     signal clicked(int sequenceNumber)
@@ -55,9 +56,9 @@ Item {
     }
     function refresh() {
         used = ({})
-        add(line, { path: block.route })
+        if (!masterDomain) add(line, { path: block.route })
         if (block.kind === "survey") add(marker, { coordinate: block.coordinate, label: block.abbreviation, routePoint: -1 })
-        if (block.isCurrentItem && block.kind === "survey") {
+        if (block.isCurrentItem && block.kind === "survey" && !masterDomain) {
             for (var corners of (block.preview.footprints || [])) add(footprint, {path: corners})
             var path = block.preview.path || []
             for (var i = 0; i < path.length; ++i) add(marker, {coordinate: path[i], label: "", routePoint: i})
@@ -78,6 +79,7 @@ Item {
         function onTranslated(distance, azimuth) { timer.stop(); root.translate(distance, azimuth) }
         function onIsCurrentItemChanged() { timer.restart() }
     }
+    Connections { target: chimeraFleet; function onChanged() { if (!timer.running) timer.start() } }
     Timer { id: timer; interval: 50; onTriggered: root.refresh() }
     Loader {
         id: pointLoader
@@ -94,7 +96,7 @@ Item {
         onLoaded: { item.parent = root.map; root.map.addMapItem(item) }
     }
     Loader {
-        active: root.block.kind !== "survey" && root.block.isCurrentItem && root.interactive && pointLoader.item !== null
+        active: root.block.kind !== "survey" && root.block.fleetRegion === -1 && root.block.isCurrentItem && root.interactive && pointLoader.item !== null
         sourceComponent: Component {
             MissionItemIndicatorDrag {
                 mapControl: root.map
@@ -156,7 +158,7 @@ Item {
     QGCMapPolygonVisuals {
         mapControl: root.map
         mapPolygon: root.block.surveyAreaPolygon
-        interactive: root.interactive && root.block.isCurrentItem && root.block.kind === "survey" && !root.block.splitPart
+        interactive: root.interactive && root.block.isCurrentItem && root.block.kind === "survey" && !root.block.splitPart && root.block.fleetRegion === -1
         visible: root.block.kind === "survey"
         borderWidth: 2; borderColor: "white"; interiorColor: "#2080ff"; interiorOpacity: 0.15
     }

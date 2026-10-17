@@ -41,7 +41,8 @@ Item {
     readonly property var   _defaultVehicleCoordinate:  QtPositioning.coordinate(37.803784, -122.462276)
     readonly property bool  _waypointsOnlyMode:         QGroundControl.corePlugin.options.missionWaypointsOnly
 
-    property var    _planMasterController:              planMasterController
+    readonly property var _fleet: typeof chimeraFleet !== "undefined" ? chimeraFleet : null
+    property var    _planMasterController:              _fleet && _fleet.activeController ? _fleet.activeController : planMasterController
     property var    _missionController:                 _planMasterController.missionController
     property var    _geoFenceController:                _planMasterController.geoFenceController
     property var    _rallyPointController:              _planMasterController.rallyPointController
@@ -158,12 +159,28 @@ Item {
         }
     }
 
+    Loader {
+        id: fleetBar
+        anchors.top: planToolBar.bottom
+        anchors.horizontalCenter: parent.horizontalCenter
+        z: 100
+        active: _fleet !== null && _fleet.enabled
+        source: "qrc:/Planner/FleetBar.qml"
+        onLoaded: item.fit = planMasterController.fitViewportToItems
+    }
+    Loader {
+        active: _fleet !== null && _fleet.enabled
+        source: "qrc:/Planner/FleetOverlay.qml"
+        onLoaded: item.map = editorMap
+    }
+
     PlanMasterController {
         id:         planMasterController
         flyView:    false
 
         Component.onCompleted: {
-            _planMasterController.start()
+            planMasterController.start()
+            if (_fleet) _fleet.attach(planMasterController)
             _missionController.setCurrentPlanViewSeqNum(0, true)
         }
 
@@ -185,10 +202,10 @@ Item {
         }
 
         function checkReadyForSaveUpload(save) {
-            if (readyForSaveState() == VisualMissionItem.NotReadyForSaveData) {
+            if (_planMasterController.readyForSaveState() == VisualMissionItem.NotReadyForSaveData) {
                 waitingOnIncompleteDataMessage(save)
                 return false
-            } else if (readyForSaveState() == VisualMissionItem.NotReadyForSaveTerrain) {
+            } else if (_planMasterController.readyForSaveState() == VisualMissionItem.NotReadyForSaveTerrain) {
                 waitingOnTerrainDataMessage(save)
                 return false
             }
@@ -201,7 +218,7 @@ Item {
             }
             switch (_missionController.sendToVehiclePreCheck()) {
                 case MissionController.SendToVehiclePreCheckStateOk:
-                    sendToVehicle()
+                    _planMasterController.sendToVehicle()
                     break
                 case MissionController.SendToVehiclePreCheckStateActiveMission:
                     mainWindow.showMessageDialog(qsTr("Send To Vehicle"), qsTr("Current mission must be paused prior to uploading a new Plan"))
@@ -236,7 +253,11 @@ Item {
         }
 
         function fitViewportToItems() {
-            mapFitFunctions.fitMapViewportToMissionItems()
+            if (_fleet && _fleet.enabled) {
+                var coordinates = []
+                for (var overlay of _fleet.overlays) coordinates = coordinates.concat(overlay.path)
+                mapFitFunctions.fitMapViewportToAllCoordinates(coordinates)
+            } else mapFitFunctions.fitMapViewportToMissionItems()
         }
 
         function saveKmlToSelectedFile() {
@@ -311,7 +332,7 @@ Item {
 
         onAcceptedForSave: (file) => {
             if (planFiles) {
-                _planMasterController.saveToFile(file)
+                planMasterController.saveToFile(file)
             } else {
                 _planMasterController.saveToKml(file)
             }
@@ -319,8 +340,8 @@ Item {
         }
 
         onAcceptedForLoad: (file) => {
-            _planMasterController.loadFromFile(file)
-            _planMasterController.fitViewportToItems()
+            planMasterController.loadFromFile(file)
+            planMasterController.fitViewportToItems()
             _missionController.setCurrentPlanViewSeqNum(0, true)
             close()
         }
@@ -328,6 +349,7 @@ Item {
 
     PlanViewToolBar {
         id:                     planToolBar
+        overviewText:           _fleet && _fleet.enabled && _fleet.selected === 0 ? qsTr("Fleet master: %1 drones. Select a drone for mission totals.").arg(_fleet.drones.length) : ""
         planMasterController:   _planMasterController
     }
 
@@ -335,7 +357,7 @@ Item {
         id:             panel
         anchors.left:   parent.left
         anchors.right:  parent.right
-        anchors.top:    planToolBar.bottom
+        anchors.top:    fleetBar.active ? fleetBar.bottom : planToolBar.bottom
         anchors.bottom: parent.bottom
 
         FlightMap {
@@ -847,7 +869,7 @@ Item {
             anchors.bottom:     parent.bottom
             height:             ScreenTools.defaultFontPixelHeight * 7
             missionController:  _missionController
-            visible:            _internalVisible && _editingLayer === _layerMission && QGroundControl.corePlugin.options.showMissionStatus
+            visible:            (!_fleet || !_fleet.enabled || _fleet.selected > 0) && _internalVisible && _editingLayer === _layerMission && QGroundControl.corePlugin.options.showMissionStatus
 
             onSetCurrentSeqNum: _missionController.setCurrentPlanViewSeqNum(seqNum, true)
 
@@ -876,7 +898,7 @@ Item {
         mainWindow.showMessageDialog(title,
                                      qsTr("You have unsaved/unsent changes. Loading from a file will lose these changes. Are you sure you want to load from a file?"),
                                      Dialog.Yes | Dialog.Cancel,
-                                     function() { _planMasterController.loadFromSelectedFile() } )
+                                     function() { planMasterController.loadFromSelectedFile() } )
     }
 
     Component {
@@ -991,6 +1013,7 @@ Item {
                 rowSpacing:         _margin
                 Layout.fillWidth:   true
                 visible:            createSection.checked
+                enabled:            !_fleet || _fleet.selected === 0
 
                 Repeater {
                     model: _planMasterController.planCreators
@@ -1068,7 +1091,7 @@ Item {
                         if (_planMasterController.dirty) {
                             showLoadFromFileOverwritePrompt(columnHolder._overwriteText)
                         } else {
-                            _planMasterController.loadFromSelectedFile()
+                            planMasterController.loadFromSelectedFile()
                         }
                     }
                 }
@@ -1076,13 +1099,13 @@ Item {
                 QGCButton {
                     text:               qsTr("Save")
                     Layout.fillWidth:   true
-                    enabled:            !_planMasterController.syncInProgress && _planMasterController.currentPlanFile !== ""
+                    enabled:            !_planMasterController.syncInProgress && planMasterController.currentPlanFile !== ""
                     onClicked: {
                         dropPanel.hide()
-                        if(_planMasterController.currentPlanFile !== "") {
-                            _planMasterController.saveToCurrent()
+                        if(planMasterController.currentPlanFile !== "") {
+                            planMasterController.saveToCurrent()
                         } else {
-                            _planMasterController.saveToSelectedFile()
+                            planMasterController.saveToSelectedFile()
                         }
                     }
                 }
@@ -1093,7 +1116,7 @@ Item {
                     enabled:            !_planMasterController.syncInProgress && _planMasterController.containsItems
                     onClicked: {
                         dropPanel.hide()
-                        _planMasterController.saveToSelectedFile()
+                        planMasterController.saveToSelectedFile()
                     }
                 }
 
@@ -1109,7 +1132,7 @@ Item {
                             return
                         }
                         dropPanel.hide()
-                        _planMasterController.saveKmlToSelectedFile()
+                        planMasterController.saveKmlToSelectedFile()
                     }
                 }
             }
@@ -1132,7 +1155,7 @@ Item {
                     visible:            !QGroundControl.corePlugin.options.disableVehicleConnection
                     onClicked: {
                         dropPanel.hide()
-                        _planMasterController.upload()
+                        planMasterController.upload()
                     }
                 }
 

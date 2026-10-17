@@ -9,7 +9,7 @@ The `custom` link selects `custom-planner`. The plugin keeps the standard QGC in
 3. Select a survey part. Click a **+** handle on a flight leg to add a split point. Drag the split marker to move it along the route. Use its menu or **Remove end split** to remove it. Insert normal QGC ROI commands and inspection waypoints between the resulting mission-list items.
 4. Edit the full survey from any linked part. Changes to its polygon, position, altitude, heading, speed, overlap, or camera settings update all parts. Splits divide the regenerated route by relative distance along that route. Review their positions after changing the geometry.
 5. Add **Chimera vantage** after the survey. Its first command is `NAV_DELAY(1)` to arm vantage autonomy. Fiducial and vantage blocks emit no gimbal or ROI commands; `5g_drone` controls their gimbal pointing.
-6. Save and upload the native plan through QGC. Each part stays one mission-list item. Commands expand for upload. Use separate plans with QGC's normal vehicle selection for multiple drones.
+6. Save and upload the native plan through QGC. Each part stays one mission-list item. Commands expand for upload. For coordinated planning, use the fleet workflow below.
 
 Removing a split joins adjacent survey parts. If manual mission items lie between them, move or remove those items first. They are never deleted or reordered by split removal. Removing the last split restores the full editable survey. Deleting a linked part through QGC's normal delete action leaves a gap; upload rejects an incomplete group.
 
@@ -25,7 +25,7 @@ Keep the saved native plan. Downloading from an aircraft returns MAVLink command
 
 ## Geometry and limits
 
-The polygon defines the required ground area. The selected survey part is cyan with a thicker line; other parts are white. Orange outlines show sample camera footprints. The camera model uses rectified image dimensions and `fx`, `fy`, `cx`, and `cy` in pixels. Initial values are examples, not calibration data. Optical bearing follows aircraft yaw; pitch -90 degrees points down.
+The polygon defines the required ground area. The selected survey part is cyan with a thicker line; other parts are white. Orange outlines show sample camera footprints. The pinhole camera model uses image dimensions and `fx`, `fy`, `cx`, and `cy` in pixels. Initial values are examples, not calibration data. Optical bearing follows aircraft yaw; pitch -90 degrees points down.
 
 Corner rays intersect flat ground at home height. A rectangle aligned with the tracks fits inside the footprint. Its width and side overlap set track spacing. Capture spacing uses its length with fixed 70% forward overlap. QGC generates the flight legs and trigger commands. Sample footprints do not prove full boundary coverage.
 
@@ -48,6 +48,19 @@ Center drags move the existing map paths and rebuild flight commands on release.
 
 New blocks use QGC's default flight altitude and a speed of 1 m/s. New surveys use a gimbal pitch of -70 degrees and 25% side overlap. The slider and numeric angle fields change heading and track angle together. Loading an older plan preserves its saved angles until either is edited.
 
-The camera list contains Custom and eight named aircraft/camera presets: UAS1–2 rgb_mid and thermal, and UAS3–4 pilot and thermal. Selecting a preset applies all six intrinsic values at once. Editing an intrinsic selects Custom. The preset and numeric values are saved with the plan and shared by linked survey parts.
+The camera list contains Custom and eight named aircraft/camera presets: rgb_mid and thermal for UAS1 and UAS2, and pilot and thermal for UAS3 and UAS4. Selecting a preset applies all six intrinsic values at once. Editing an intrinsic selects Custom. The preset and numeric values are saved with the plan and shared by linked survey parts.
 
 `CameraPresets.json` contains the ROS calibration fields from `5g_drone/config/camera_calibration_files/uas*-*.yaml` (local source snapshot, 2026-10-17). Planning uses `image_width`, `image_height`, and `camera_matrix.data` (K), not the projection matrix. The source distortion and rectification fields are retained for reference; coverage still uses the pinhole model. Source files marked as borrowed placeholders have a visible note in the selector panel. Presets are bundled and do not change when the external source files change.
+
+
+## Fleet planning
+
+1. In the master, draw one convex Chimera survey and add one Chimera fiducial. The master survey supplies the shared area and the initial camera and flight settings. In its **Fleet setup** section, choose 2 to 8 multicopters and the altitude limits, then select **Create drone missions**. The drone count is fixed for that master; use a new master to change it.
+2. The top selector switches between **Master** and each drone's normal QGC mission editor. Master shows all routes in separate colors and numbered region boundaries. Each drone view keeps the other routes faintly visible. Select **Fleet setup** in the top bar to set launch coordinates and fixed headings. Default headings are spaced by 360 degrees divided by drone count. Launch points initially use the master launch location; set each drone's location before export.
+3. Drone 1 visits regions 1, 2, ... . Drone 2 visits 2, 3, ... , 1, and so on. Each keeps its own heading for every region. Each region has its own camera, speed, pitch, and overlap. Add split points and ordinary QGC ROI/inspection waypoints in the drone views. Shared-area edits preserve those splits and manual items. Manual inspection coordinates do not move with the area.
+4. Altitudes are assigned from the minimum upward at equal spacing. **Maximum gap** can reduce the spacing; 0 leaves it uncapped. With a cap, the highest layer can be below the maximum altitude. The bar reports the assigned vertical gap. Survey, fiducial, takeoff, and manual waypoint altitudes use the assigned layer. Their home elevations use the master home elevation, so this requires launch sites on the same ground plane. ROI target altitude is not changed.
+5. Normal **Save** and **Save As** save the whole master, including every drone's edited mission. Select a drone and use **Export drone** for an editable standalone plan. Open that file in QGC, select the intended vehicle, and upload it normally. Direct upload from a fleet view is blocked because the master contains multiple missions.
+
+Center-first routes retain the QGC-generated survey tracks. Tracks are divided into short passes in concentric bands around each region's center, then ordered from inner bands to outer bands with alternating travel directions. The aircraft starts at the camera-offset position for the center. These extra passes cost more turns and mission commands than a normal edge-to-edge survey. The band width starts at twice track spacing, with a 5 m minimum. It is then limited to one quarter of the region radius, with a 0.5 m lower bound. A capture is requested at the center before the passes. Routes above 2000 passes are rejected.
+
+This is an offline planner, not a fleet flight scheduler. Drones advance to the next region independently. There is no runtime phase barrier, launch/landing sequence, collision check, or obstacle check. Altitude layers describe planned survey and inspection flight, not guaranteed separation during takeoff, RTL, or landing. Each generated mission ends with ordinary RTL, which can be edited in its drone view. Region boundaries use the old planner's control-point splitter, with equal angular divisions and convex-area validation in this draft.

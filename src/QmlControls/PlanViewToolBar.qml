@@ -25,6 +25,7 @@ Rectangle {
     height: ScreenTools.toolbarHeight
     color:  qgcPal.toolbarBackground
 
+    property string overviewText: ""
     property var    planMasterController
 
     property var    _activeVehicle:         QGroundControl.multiVehicleManager.activeVehicle
@@ -65,7 +66,16 @@ Rectangle {
         onClicked:      mainWindow.showFlyView()
     }
 
+    QGCLabel {
+        anchors.left: viewButtonRow.right
+        anchors.leftMargin: ScreenTools.defaultFontPixelWidth
+        anchors.verticalCenter: parent.verticalCenter
+        text: _root.overviewText
+        visible: text.length > 0
+    }
+
     QGCFlickable {
+        visible: _root.overviewText.length === 0
         id:                     toolsFlickable
         //anchors.leftMargin:     ScreenTools.defaultFontPixelWidth * ScreenTools.largeFontPointRatio * 1.5
         anchors.left:           viewButtonRow.right

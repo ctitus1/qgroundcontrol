@@ -56,7 +56,8 @@ public:
     Q_PROPERTY(QmlObjectListModel*      planCreators            MEMBER _planCreators                        NOTIFY planCreatorsChanged)
 
     /// Should be called immediately upon Component.onCompleted.
-    Q_INVOKABLE void start(void);
+    /// offlineOnly keeps this editor independent of connected vehicles.
+    Q_INVOKABLE void start(bool offlineOnly = false);
 
     /// Starts the controller using a single static active vehicle. Will not track global active vehicle changes.
     ///     @param deleteWhenSendCmplete The PlanMasterController object should be deleted after the first send is completed.

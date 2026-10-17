@@ -2,12 +2,13 @@
 
 #include "QGCCorePlugin.h"
 #include "ChimeraPlanner.h"
+#include "FleetPlanner.h"
 
 class CustomPlugin : public QGCCorePlugin
 {
     Q_OBJECT
 public:
-    explicit CustomPlugin(QObject* parent = nullptr) : QGCCorePlugin(parent), _planner(this) {}
+    explicit CustomPlugin(QObject* parent = nullptr) : QGCCorePlugin(parent), _planner(this), _fleet(this) {}
     static QGCCorePlugin* instance();
     QQmlApplicationEngine* createQmlApplicationEngine(QObject* parent) override;
     void postSaveToMissionJson(PlanMasterController* controller, QJsonObject& mission) override;
@@ -17,4 +18,5 @@ public:
     QStringList complexMissionItemNames(Vehicle* vehicle, const QStringList& names) override;
 private:
     ChimeraPlanner _planner;
+    FleetPlanner _fleet;
 };

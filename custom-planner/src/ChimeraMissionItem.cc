@@ -1,6 +1,7 @@
 #include "ChimeraMissionItem.h"
 #include "ChimeraPlanner.h"
 #include "SurveyComplexItem.h"
+#include "PlannerSurvey.h"
 #include "CameraCalc.h"
 #include "QGCMapPolygon.h"
 #include "MissionItem.h"
@@ -101,7 +102,7 @@ ChimeraMissionItem::ChimeraMissionItem(PlanMasterController* master, bool flyVie
                                      const QString& kind, ChimeraPlanner* planner)
     : ComplexMissionItem(master, flyView), _kind(kind), _planner(planner),
       _survey(new SurveyComplexItem(master, flyView, QString())),
-      _flightSurvey(new SurveyComplexItem(master, flyView, QString()))
+      _flightSurvey(new PlannerSurvey(master, flyView, QString()))
 {
     _survey->setParent(this);
     _flightSurvey->setParent(this);
@@ -364,6 +365,7 @@ void ChimeraMissionItem::rebuild()
         _survey->cameraCalc()->distanceToSurface()->setRawValue(altitude);
         _survey->gridAngle()->setRawValue(_values["angle"]);
         _survey->setProperty("chimeraSurvey", _values);
+        _survey->setProperty("chimeraCenterOut", _centerOut);
         QObject owner;
         QList<MissionItem*> generated; QVariantList path;
         bool built = true;
@@ -515,7 +517,7 @@ void ChimeraMissionItem::save(QJsonArray& items)
     QJsonArray polygon;
     for (const auto& c : surveyAreaPolygon()->coordinateList()) polygon.append(QJsonArray{c.latitude(), c.longitude()});
     items.append(QJsonObject{{"type", "ComplexItem"}, {"complexItemType", "chimera-" + _kind}, {"version", linkedSurvey() ? 3 : splitPart() ? 2 : 1},
-        {"cameraPreset", _cameraPreset}, {"values", QJsonObject::fromVariantMap(_values)}, {"position", QJsonArray{_position.latitude(), _position.longitude()}},
+        {"fleetRegion", _fleetRegion}, {"centerOut", _centerOut}, {"cameraPreset", _cameraPreset}, {"values", QJsonObject::fromVariantMap(_values)}, {"position", QJsonArray{_position.latitude(), _position.longitude()}},
         {"polygon", polygon}, {"surveyGroup", _groupId}, {"rangeStart", _start}, {"rangeEnd", _end}, {"frozenRoute", _frozen}, {"resume", _resume}, {"inspections", QJsonArray::fromVariantList(_inspections)}});
 }
 bool ChimeraMissionItem::load(const QJsonObject& json, int sequence, QString& error)
@@ -539,6 +541,8 @@ bool ChimeraMissionItem::load(const QJsonObject& json, int sequence, QString& er
         for (const auto& p : json["polygon"].toArray()) { const auto a = p.toArray(); polygon.append(QGeoCoordinate(a[0].toDouble(), a[1].toDouble())); }
         surveyAreaPolygon()->setPath(polygon);
         _inspections = json["inspections"].toArray().toVariantList();
+        _fleetRegion = json["fleetRegion"].toInt(-1);
+        _centerOut = json["centerOut"].toBool();
         _cameraPreset = json["cameraPreset"].toString();
         _syncedCameraPreset = _cameraPreset;
         _groupId = json["surveyGroup"].toString();

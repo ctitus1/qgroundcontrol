@@ -1,4 +1,5 @@
 #include "CustomPlugin.h"
+#include "QGCApplication.h"
 #include <QQmlApplicationEngine>
 #include <QQmlContext>
 #include <QApplicationStatic>
@@ -19,6 +20,7 @@ QQmlApplicationEngine* CustomPlugin::createQmlApplicationEngine(QObject* parent)
 {
     auto* engine = QGCCorePlugin::createQmlApplicationEngine(parent);
     engine->rootContext()->setContextProperty("chimeraPlanner", &_planner);
+    engine->rootContext()->setContextProperty("chimeraFleet", &_fleet);
 #ifdef QGC_PLANNER_SMOKE_TEST
     extern void schedulePlannerSmoke(QQmlApplicationEngine*, ChimeraPlanner*);
     schedulePlannerSmoke(engine, &_planner);
@@ -29,11 +31,14 @@ QQmlApplicationEngine* CustomPlugin::createQmlApplicationEngine(QObject* parent)
 void CustomPlugin::postSaveToMissionJson(PlanMasterController* controller, QJsonObject& mission)
 {
     _planner.saveSettings(controller, mission);
+    _fleet.save(controller, mission);
 }
 
 void CustomPlugin::postLoadFromJson(PlanMasterController* controller, QJsonObject& plan)
 {
     _planner.loadSettings(controller, plan);
+    _fleet.load(controller, plan);
+    if (!_fleet.error().isEmpty()) qgcApp()->showAppMessage(_fleet.error());
     auto* items = controller->missionController()->visualItems();
     for (int i = 1; i < items->count(); ++i) {
         if (auto* block = qobject_cast<ChimeraMissionItem*>(items->get(i)); block && block->splitPart()) block->upgradeFrozenSurvey();
@@ -42,6 +47,8 @@ void CustomPlugin::postLoadFromJson(PlanMasterController* controller, QJsonObjec
 
 QString CustomPlugin::missionUploadError(PlanMasterController* controller) const
 {
+    if (controller == _fleet.activeController() && !_fleet.error().isEmpty()) return _fleet.error();
+    if (_fleet.owns(controller)) return tr("Export the selected drone plan and open it before upload. The master contains multiple missions.");
     auto* items = controller->missionController()->visualItems();
     bool regionStarted = false;
     QObject owner;

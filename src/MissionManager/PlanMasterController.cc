@@ -82,14 +82,14 @@ PlanMasterController::~PlanMasterController()
 
 }
 
-void PlanMasterController::start(void)
+void PlanMasterController::start(bool offlineOnly)
 {
     _missionController.start    (_flyView);
     _geoFenceController.start   (_flyView);
     _rallyPointController.start (_flyView);
 
-    _activeVehicleChanged(_multiVehicleMgr->activeVehicle());
-    connect(_multiVehicleMgr, &MultiVehicleManager::activeVehicleChanged, this, &PlanMasterController::_activeVehicleChanged);
+    _activeVehicleChanged(offlineOnly ? nullptr : _multiVehicleMgr->activeVehicle());
+    if (!offlineOnly) connect(_multiVehicleMgr, &MultiVehicleManager::activeVehicleChanged, this, &PlanMasterController::_activeVehicleChanged);
 
     _updatePlanCreatorsList();
 }

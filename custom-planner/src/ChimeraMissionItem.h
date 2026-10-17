@@ -16,6 +16,8 @@ class ChimeraMissionItem : public ComplexMissionItem
     Q_MOC_INCLUDE("Fact.h")
     Q_PROPERTY(QVariantList cameraPresets READ cameraPresets CONSTANT)
     Q_PROPERTY(int cameraPreset READ cameraPreset NOTIFY changed)
+    Q_PROPERTY(int fleetRegion READ fleetRegion NOTIFY changed)
+    Q_PROPERTY(bool centerOut READ centerOut NOTIFY changed)
     Q_PROPERTY(bool hasEndSplit READ hasEndSplit NOTIFY changed)
     Q_PROPERTY(bool linkedSurvey READ linkedSurvey NOTIFY changed)
     Q_PROPERTY(QVariantList splitHandles READ splitHandles NOTIFY changed)
@@ -30,6 +32,9 @@ class ChimeraMissionItem : public ComplexMissionItem
     Q_PROPERTY(QGeoCoordinate centerCoordinate READ centerCoordinate WRITE setCoordinate NOTIFY changed)
 public:
     ChimeraMissionItem(PlanMasterController* master, bool flyView, const QString& kind, ChimeraPlanner* planner);
+    int fleetRegion() const { return _fleetRegion; }
+    bool centerOut() const { return _centerOut; }
+    void setFleetRegion(int region) { _fleetRegion = region; _centerOut = region >= 0; rebuild(); }
     QVariantList cameraPresets() const;
     int cameraPreset() const;
     Q_INVOKABLE void setCameraPreset(int index);
@@ -104,6 +109,8 @@ private:
     ChimeraMissionItem* nextPart() const;
     void moveInspectionPoints(const QGeoCoordinate& from, const QGeoCoordinate& to);
     double homeAltitude() const;
+    int _fleetRegion = -1;
+    bool _centerOut = false;
     QString _kind;
     ChimeraPlanner* _planner;
     SurveyComplexItem* _survey;

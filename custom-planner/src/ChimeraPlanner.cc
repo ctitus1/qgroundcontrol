@@ -9,6 +9,8 @@
 #include "QmlObjectListModel.h"
 #include "SimpleMissionItem.h"
 #include "SurveyComplexItem.h"
+#include "PlannerSurvey.h"
+#include "CenterOut.h"
 #include <QFileInfo>
 #include <QJsonArray>
 #include <QJsonDocument>
@@ -131,7 +133,30 @@ bool ChimeraPlanner::buildSurvey(SurveyComplexItem* source, QList<MissionItem*>&
         polygon.append(translate(point, -shape.center));
     }
     if (generated.surveyAreaPolygon()->coordinateList() != polygon) generated.surveyAreaPolygon()->setPath(polygon);
-    generated.appendMissionItems(items, owner);
+    if (source->property("chimeraCenterOut").toBool()) {
+        auto* grid = dynamic_cast<PlannerSurvey*>(&generated);
+        if (!grid) { error = tr("Center-first survey grid is unavailable."); return false; }
+        const auto center = generated.surveyAreaPolygon()->center();
+        double radius = 0;
+        for (const auto& vertex : generated.surveyAreaPolygon()->coordinateList()) radius = std::max(radius, center.distanceTo(vertex));
+        const double band = std::max(0.5, std::min(std::max(5., shape.spacing * 2), radius / 4));
+        if (radius / band > 2000) { error = tr("The survey is too long for center-first passes. Reduce the area."); return false; }
+        const auto passes = CenterOut::passes(grid->legs(), center, band, source->gridAngle()->rawValue().toDouble());
+        if (passes.size() > 2000) { error = tr("Center-first survey exceeds 2000 passes. Increase spacing or reduce the area."); return false; }
+        auto waypoint = [&](const QGeoCoordinate& c) {
+            items.append(new MissionItem(0, MAV_CMD_NAV_WAYPOINT, MAV_FRAME_GLOBAL_RELATIVE_ALT, 0,0,0,0,
+                c.latitude(), c.longitude(), source->cameraCalc()->distanceToSurface()->rawValue().toDouble(), true,false,owner));
+        };
+        waypoint(center);
+        items.append(command(owner, MAV_CMD_DO_SET_CAM_TRIGG_DIST, shape.captureDistance, 0, 1));
+        items.append(command(owner, MAV_CMD_DO_SET_CAM_TRIGG_DIST, 0));
+        for (const auto& pass : passes) {
+            waypoint(pass.start);
+            items.append(command(owner, MAV_CMD_DO_SET_CAM_TRIGG_DIST, shape.captureDistance));
+            waypoint(pass.end);
+            items.append(command(owner, MAV_CMD_DO_SET_CAM_TRIGG_DIST, 0));
+        }
+    } else generated.appendMissionItems(items, owner);
     const double yaw = settings(source)["yaw"].toDouble();
     for (auto* item : std::as_const(items)) {
         if (item->command() == MAV_CMD_NAV_WAYPOINT) {

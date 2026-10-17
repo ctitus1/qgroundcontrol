@@ -1,4 +1,6 @@
 #include "ChimeraPlanner.h"
+#include "FleetPlanner.h"
+#include "CenterOut.h"
 #include "SettingsManager.h"
 #include "AppSettings.h"
 #include "Fact.h"
@@ -19,6 +21,7 @@
 #include <QEventLoop>
 #include <QJsonArray>
 #include <QJsonDocument>
+#include <QFile>
 #include <stdexcept>
 
 namespace {
@@ -30,6 +33,7 @@ void check(bool passed, const QString& message)
 void schedulePlannerSmoke(QQmlApplicationEngine* engine, ChimeraPlanner*)
 {
     if (!qEnvironmentVariableIsSet("QGC_PLANNER_SMOKE")) return;
+    SettingsManager::instance()->appSettings()->firstRunPromptIdsShown()->setRawValue("1,2");
     QTimer::singleShot(2500, engine, [engine] {
         try {
             PlanMasterController plan; plan.start();
@@ -257,6 +261,87 @@ void schedulePlannerSmoke(QQmlApplicationEngine* engine, ChimeraPlanner*)
             auto* invalidSurvey = qobject_cast<ChimeraMissionItem*>(mission->insertComplexMissionItem("Chimera survey", origin, 8));
             invalidSurvey->setValue("pitch", -5);
             check(invalidSurvey->readyForSaveState() == VisualMissionItem::NotReadyForSaveData, "Invalid geometry blocked");
+            PlanMasterController fleetMaster; fleetMaster.setFlyView(false); fleetMaster.start(true);
+            auto* fleetMission = fleetMaster.missionController();
+            fleetMission->insertTakeoffItem(origin, 1);
+            fleetMission->insertComplexMissionItem("Chimera fiducial", origin, 2);
+            auto* domain = qobject_cast<ChimeraMissionItem*>(fleetMission->insertComplexMissionItem("Chimera survey", origin, 3));
+            FleetPlanner fleet;
+            check(fleet.create(domain, 3, 30, 60, 10).isEmpty(), "Create three drone missions");
+            fleet.synchronize();
+            check(fleet.validate().isEmpty(), fleet.validate());
+            check(fleet.separation() == 10 && fleet.drones()[2].toMap()["altitude"].toDouble() == 50, "Maximum vertical gap caps assigned layers");
+            for (int drone = 0; drone < 3; ++drone) {
+                fleet.setSelected(drone + 1);
+                auto* items = fleet.activeController()->missionController()->visualItems();
+                for (int phase = 0; phase < 3; ++phase) {
+                    auto* region = qobject_cast<ChimeraMissionItem*>(items->get(3 + phase));
+                    check(region && region->fleetRegion() == (drone + phase) % 3 && region->centerOut(), "Rotated region assignment");
+                    check(region->values()["yaw"].toDouble() == 120 * drone && region->values()["altitude"].toDouble() == 30 + 10 * drone, "Independent heading and automatic altitude");
+                    check(region->route().size() >= 3, "Center-first route generated");
+                }
+            }
+            fleet.setSelected(1);
+            auto* childMission = fleet.activeController()->missionController();
+            auto* region = qobject_cast<ChimeraMissionItem*>(childMission->visualItems()->get(3));
+            check(region->addSplitPoint(region->splitHandles().first().value<QGeoCoordinate>()).isEmpty(), "Fleet region supports survey interruptions");
+            childMission->insertSimpleMissionItem(origin.atDistanceAndAzimuth(10, 90), 4);
+            const int countBefore = childMission->visualItems()->count();
+            region->setCameraPreset(2);
+            domain->setCoordinate(domain->centerCoordinate().atDistanceAndAzimuth(20, 90));
+            fleet.setProfile(0, "heading", 45);
+            fleet.setProfile(0, "latitude", origin.latitude() + 0.001);
+            fleet.synchronize();
+            check(childMission->visualItems()->count() == countBefore && region->cameraPreset() == 2 && region->values()["yaw"].toDouble() == 45, "Shared edits preserve drone inspection items and camera settings");
+            check(fleet.validate().isEmpty(), fleet.validate());
+            auto fleetJson = fleetMaster.saveToJson().object();
+            auto fleetMissionJson = fleetJson["mission"].toObject();
+            fleet.save(&fleetMaster, fleetMissionJson); fleetJson["mission"] = fleetMissionJson;
+            PlanMasterController restoredFleet; restoredFleet.setFlyView(false); restoredFleet.start(true);
+            check(restoredFleet.missionController()->load(fleetMissionJson, error), error);
+            fleet.attach(&restoredFleet); fleet.load(&restoredFleet, fleetJson);
+            check(fleet.enabled() && fleet.validate().isEmpty(), "Master restores all drone missions");
+            fleet.setSelected(1);
+            check(fleet.activeController()->missionController()->visualItems()->count() == countBefore, "Master preserves manual drone mission items");
+            check(fleet.exportDrone(0, "/tmp/qgc-fleet-drone.plan").isEmpty(), "Export a single drone plan");
+            context.setContextProperty("chimeraFleet", &fleet);
+            QQmlComponent fleetBar(engine, QUrl("qrc:/Planner/FleetBar.qml"));
+            check(fleetBar.isReady(), fleetBar.errorString());
+            auto* fleetWidget = fleetBar.create(&context); check(fleetWidget, fleetBar.errorString()); delete fleetWidget;
+            QQmlComponent fleetOverlay(engine, QUrl("qrc:/Planner/FleetOverlay.qml"));
+            check(fleetOverlay.isReady(), fleetOverlay.errorString());
+            auto* fleetMap = canvas.create(&context);
+            fleetWidget = fleetOverlay.createWithInitialProperties({{"map", QVariant::fromValue(fleetMap)}}, &context);
+            check(fleetWidget, fleetOverlay.errorString()); delete fleetWidget; delete fleetMap;
+            const auto testCenter = origin;
+            QList<QPair<QGeoCoordinate,QGeoCoordinate>> testLegs;
+            for (double x : {-10.,0.,10.}) {
+                auto middle=testCenter.atDistanceAndAzimuth(std::abs(x),x<0?270:90);
+                testLegs.append({middle.atDistanceAndAzimuth(40,180),middle.atDistanceAndAzimuth(40,0)});
+            }
+            const auto passes=CenterOut::passes(testLegs,testCenter,10,0);
+            double length=0; int previousRing=-1;
+            for (const auto& pass : passes) { check(pass.ring>=previousRing,"Inner bands precede outer bands"); previousRing=pass.ring; length+=pass.start.distanceTo(pass.end); }
+            check(std::abs(length-240)<0.1,"Center-first subdivision preserves all survey tracks");
+            QFile masterFile("/tmp/qgc-fleet-master.plan"); check(masterFile.open(QIODevice::WriteOnly),"Write fleet fixture");
+            masterFile.write(QJsonDocument(fleetJson).toJson()); masterFile.close();
+            auto* liveFleet=qobject_cast<FleetPlanner*>(engine->rootContext()->contextProperty("chimeraFleet").value<QObject*>());
+            check(liveFleet && liveFleet->activeController(),"Fleet attached to native Plan View");
+            auto* liveMaster=liveFleet->activeController();
+            liveMaster->loadFromFile("/tmp/qgc-fleet-master.plan");
+            check(liveFleet->enabled(),"Native master load restores fleet");
+            auto* mainWindow=qobject_cast<QQuickWindow*>(engine->rootObjects().first());
+            check(QMetaObject::invokeMethod(mainWindow,"showPlanView"),"Show native master view");
+            check(QMetaObject::invokeMethod(liveMaster,"fitViewportToItems"),"Fit fleet master map");
+            QEventLoop viewEvents; QTimer::singleShot(250,&viewEvents,&QEventLoop::quit); viewEvents.exec();
+            mainWindow->grabWindow().save("/tmp/qgc-fleet-master.png");
+            liveFleet->setSelected(1);
+            auto* liveMission=liveFleet->activeController()->missionController();
+            liveMission->setCurrentPlanViewSeqNum(qobject_cast<VisualMissionItem*>(liveMission->visualItems()->get(3))->sequenceNumber(),true);
+            QTimer::singleShot(250,&viewEvents,&QEventLoop::quit); viewEvents.exec();
+            mainWindow->grabWindow().save("/tmp/qgc-fleet-drone.png");
+            liveMaster->saveToFile("/tmp/qgc-fleet-native-save.plan");
+            check(liveFleet->activeController()!=liveMaster,"Native editor switches to the selected drone");
             qInfo() << "PLANNER_SMOKE_PASS: blocks, no-gimbal markers, linked split edit/remove/resume, persistence, Fact panels, map handles";
             QCoreApplication::exit(0);
         } catch (const std::exception& error) {
