@@ -1,0 +1,7 @@
+<RCC>
+    <qresource prefix="/Planner">
+        <file alias="SurveyEditor.qml">src/SurveyEditor.qml</file>
+        <file alias="SurveyOverlay.qml">src/SurveyOverlay.qml</file>
+        <file alias="WorkflowTools.qml">src/WorkflowTools.qml</file>
+    </qresource>
+</RCC>

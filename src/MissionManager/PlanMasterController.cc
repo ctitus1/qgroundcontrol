@@ -305,6 +305,11 @@ void PlanMasterController::_sendRallyPointsComplete(void)
 
 void PlanMasterController::sendToVehicle(void)
 {
+    const QString validationError = QGCCorePlugin::instance()->missionUploadError(this);
+    if (!validationError.isEmpty()) {
+        qgcApp()->showAppMessage(validationError);
+        return;
+    }
     SharedLinkInterfacePtr sharedLink = _managerVehicle->vehicleLinkManager()->primaryLink().lock();
     if (sharedLink) {
         if (sharedLink->linkConfiguration()->isHighLatency()) {

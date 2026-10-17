@@ -35,6 +35,14 @@ TransectStyleComplexItemEditor {
             rowSpacing:         _margin
             columns:            2
 
+            Loader {
+                Layout.columnSpan: 2
+                Layout.fillWidth: true
+                active: typeof chimeraPlanner !== "undefined" && !forPresets
+                source: active ? "qrc:/Planner/SurveyEditor.qml" : ""
+                onLoaded: item.survey = missionItem
+            }
+
             QGCLabel { text: qsTr("Angle") }
             FactTextField {
                 fact:                   missionItem.gridAngle

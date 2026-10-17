@@ -20,5 +20,23 @@ import QGroundControl.FlightMap
 
 /// Survey Complex Mission Item visuals
 TransectStyleMapVisuals {
+    id: surveyVisual
     polygonInteractive: true
+    property bool plannerEnabled: false
+    _transectPoints: plannerEnabled ? [] : _missionItem.visualTransectPoints
+    Connections {
+        target: typeof chimeraPlanner !== "undefined" ? chimeraPlanner : null
+        function onSettingsChanged(item) {
+            if (item === object) surveyVisual.plannerEnabled = chimeraPlanner.settings(object).enabled
+        }
+    }
+    Loader {
+        active: typeof chimeraPlanner !== "undefined"
+        source: active ? "qrc:/Planner/SurveyOverlay.qml" : ""
+        onLoaded: {
+            item.map = surveyVisual.map
+            item.survey = object
+            surveyVisual.plannerEnabled = chimeraPlanner.settings(object).enabled
+        }
+    }
 }
