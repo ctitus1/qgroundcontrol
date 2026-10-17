@@ -105,7 +105,7 @@ bool ChimeraPlanner::buildSurvey(SurveyComplexItem* source, QList<MissionItem*>&
     auto calc = transect["CameraCalc"].toObject();
     calc["CameraName"] = CameraCalc::canonicalManualCameraName();
     calc["AdjustedFootprintSide"] = shape.spacing;
-    calc["AdjustedFootprintFrontal"] = shape.spacing;
+    calc["AdjustedFootprintFrontal"] = shape.captureDistance;
     transect["CameraCalc"] = calc;
     transect["Items"] = QJsonArray();
     json["TransectStyleComplexItem"] = transect;
@@ -208,93 +208,6 @@ QString ChimeraPlanner::exportPlan(QObject* item, const QString& filename)
     if (!file.open(QIODevice::WriteOnly)) return file.errorString();
     const auto bytes = QJsonDocument(root).toJson();
     if (file.write(bytes) != bytes.size() || !file.commit()) return file.errorString();
-    return {};
-}
-
-QString ChimeraPlanner::insertBlock(QObject* object, const QString& kind)
-{
-    auto* controller = qobject_cast<MissionController*>(object);
-    if (!controller) return tr("Open a mission first.");
-    const int selected = controller->currentPlanViewVIIndex();
-    auto* model = controller->visualItems();
-    if (selected < 1 || selected >= model->count()) return tr("Select a waypoint first.");
-    auto* anchor = qobject_cast<SimpleMissionItem*>(model->get(selected));
-    if (!anchor || anchor->command() != MAV_CMD_NAV_WAYPOINT) return tr("Select an ordinary waypoint first.");
-    QObject owner;
-    QList<MissionItem*> block;
-    const auto checkpoint = anchor->missionItem();
-    double pitch = qQNaN();
-    double triggerDistance = 0;
-    int region = -1;
-    for (int i = 0; i <= selected; ++i) {
-        QList<MissionItem*> preceding;
-        qobject_cast<VisualMissionItem*>(model->get(i))->appendMissionItems(preceding, &owner);
-        for (const auto* item : preceding) {
-            if (item->command() == MAV_CMD_DO_MOUNT_CONTROL) pitch = item->param1();
-            if (item->command() == MAV_CMD_DO_SET_CAM_TRIGG_DIST) triggerDistance = item->param1();
-            if (item->command() == MAV_CMD_NAV_DELAY && (item->param1() == 0 || item->param1() == 1)) {
-                region = int(item->param1());
-            }
-        }
-    }
-    if (kind == "inspection") {
-        if (region != 0) return tr("Select a waypoint inside a search region for an ROI inspection.");
-        if (!std::isfinite(checkpoint.param4()) || !std::isfinite(pitch)) {
-            return tr("Set an explicit waypoint yaw and a preceding gimbal pitch before inserting an inspection.");
-        }
-        block.append(command(&owner, MAV_CMD_DO_SET_CAM_TRIGG_DIST, 0));
-        auto* roi = command(&owner, MAV_CMD_DO_SET_ROI_LOCATION);
-        roi->setFrame(MAV_FRAME_GLOBAL_RELATIVE_ALT);
-        roi->setParam5(checkpoint.param5());
-        roi->setParam6(checkpoint.param6());
-        roi->setParam7(0);
-        block.append(roi);
-        block.append(new MissionItem(checkpoint, &owner));
-        block.append(command(&owner, MAV_CMD_DO_SET_ROI_NONE));
-        auto* returnPoint = new MissionItem(checkpoint, &owner);
-        returnPoint->setParam1(2);
-        block.append(returnPoint);
-        block.append(command(&owner, MAV_CMD_DO_MOUNT_CONTROL, pitch));
-        block.append(command(&owner, MAV_CMD_NAV_DELAY, 0));
-        auto* settlePoint = new MissionItem(checkpoint, &owner);
-        settlePoint->setParam1(2);
-        block.append(settlePoint);
-        block.append(command(&owner, MAV_CMD_DO_SET_CAM_TRIGG_DIST, triggerDistance));
-    } else if (kind == "fiducial") {
-        for (int i = 0; i <= selected; ++i) {
-            auto* simple = qobject_cast<SimpleMissionItem*>(model->get(i));
-            if (simple && simple->command() == MAV_CMD_NAV_DELAY &&
-                (simple->missionItem().param1() == 0 || simple->missionItem().param1() == 1)) {
-                return tr("Place fiducial holds before the first search or assessment marker.");
-            }
-        }
-        block.append(command(&owner, MAV_CMD_DO_MOUNT_CONTROL, -90));
-        block.append(command(&owner, MAV_CMD_NAV_DELAY, 60));
-    } else if (kind == "assessment") {
-        block.append(command(&owner, MAV_CMD_DO_SET_CAM_TRIGG_DIST, 0));
-        block.append(command(&owner, MAV_CMD_DO_SET_ROI_NONE));
-        block.append(command(&owner, MAV_CMD_NAV_DELAY, 1));
-        block.append(new MissionItem(checkpoint, &owner));
-        block.append(command(&owner, MAV_CMD_NAV_DELAY, 60));
-    } else {
-        return tr("Unknown workflow block.");
-    }
-    int index = selected + 1;
-    for (const auto* item : block) {
-        auto* inserted = qobject_cast<SimpleMissionItem*>(controller->insertSimpleMissionItem(anchor->coordinate(), index++));
-        inserted->setCommand(item->command());
-        auto& target = inserted->missionItem();
-        target.setFrame(item->frame());
-        target.setParam1(item->param1()); target.setParam2(item->param2());
-        target.setParam3(item->param3()); target.setParam4(item->param4());
-        target.setParam5(item->param5()); target.setParam6(item->param6()); target.setParam7(item->param7());
-        if (item->frame() == MAV_FRAME_GLOBAL_RELATIVE_ALT || item->frame() == MAV_FRAME_GLOBAL) {
-            inserted->setAltitudeMode(item->frame() == MAV_FRAME_GLOBAL ?
-                QGroundControlQmlGlobal::AltitudeModeAbsolute : QGroundControlQmlGlobal::AltitudeModeRelative);
-            inserted->altitude()->setRawValue(item->param7());
-        }
-    }
-    controller->setCurrentPlanViewSeqNum(anchor->sequenceNumber(), true);
     return {};
 }
 

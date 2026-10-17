@@ -932,13 +932,6 @@ Item {
 
             QGCLabel { text: qsTr("Create complex pattern:") }
 
-            Loader {
-                Layout.fillWidth: true
-                active: typeof chimeraPlanner !== "undefined"
-                source: active ? "qrc:/Planner/WorkflowTools.qml" : ""
-                onLoaded: item.controller = _missionController
-            }
-
             Repeater {
                 model: _missionController.complexMissionItemNames
 

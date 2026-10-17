@@ -5,6 +5,8 @@
 #include "PlanMasterController.h"
 #include "MissionController.h"
 #include "QmlObjectListModel.h"
+#include "ChimeraMissionItem.h"
+#include "MissionItem.h"
 
 Q_APPLICATION_STATIC(CustomPlugin, plannerPlugin)
 
@@ -37,10 +39,39 @@ void CustomPlugin::postLoadFromJson(PlanMasterController* controller, QJsonObjec
 QString CustomPlugin::missionUploadError(PlanMasterController* controller) const
 {
     auto* items = controller->missionController()->visualItems();
+    bool regionStarted = false;
+    QObject owner;
     for (int i = 0; i < items->count(); ++i) {
+        auto* visual = qobject_cast<VisualMissionItem*>(items->get(i));
+        if (auto* block = qobject_cast<ChimeraMissionItem*>(visual)) {
+            if (!block->error().isEmpty()) return block->error();
+            if (block->kind() == "fiducial" && regionStarted)
+                return tr("Move fiducial blocks before the first mission arm or vantage marker.");
+        }
+        QList<MissionItem*> commands;
+        visual->appendMissionItems(commands, &owner);
+        for (auto* command : commands) {
+            if (command->command() == MAV_CMD_NAV_DELAY && (command->param1() == 0 || command->param1() == 1)) regionStarted = true;
+        }
         if (_planner.settings(items->get(i))["enabled"].toBool()) {
             return tr("Export and open the editable Chimera mission before upload. This plan contains survey source polygons.");
         }
     }
     return {};
+}
+
+ComplexMissionItem* CustomPlugin::createComplexMissionItem(const QString& type, PlanMasterController* controller, bool flyView)
+{
+    const QStringList kinds{"fiducial", "survey", "vantage"};
+    for (const auto& kind : kinds) {
+        if (type == "chimera-" + kind || type == "Chimera " + kind) {
+            return new ChimeraMissionItem(controller, flyView, kind, &_planner);
+        }
+    }
+    return nullptr;
+}
+
+QStringList CustomPlugin::complexMissionItemNames(Vehicle*, const QStringList& names)
+{
+    return QStringList{"Chimera fiducial", "Chimera survey", "Chimera vantage"} + names;
 }

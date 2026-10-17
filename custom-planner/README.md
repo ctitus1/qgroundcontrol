@@ -1,48 +1,41 @@
-# Chimera mission planner: first draft
+# Chimera mission planner
 
-This plugin uses the standard QGC interface. The tracked `custom` symlink selects `custom-planner`. The old `custom-example` plugin remains as reference code.
+The `custom` link selects `custom-planner`. The plugin keeps the standard QGC interface and adds native mission blocks. The old `custom-example` remains as reference code.
 
 ## Use
 
-1. Create a normal mission with a takeoff and a Survey polygon. The polygon defines the required ground area.
-2. In the Survey transect panel, enable **Chimera offset survey**. Enter calibrated intrinsics, aircraft yaw, gimbal pitch, and overlap. Set the altitude and track angle with the standard survey controls.
-3. Save the source plan. Select **Export editable mission**, then open the exported `.plan` file. The export expands all enabled surveys and preserves the other mission items.
-4. Select an ordinary survey waypoint. In the Pattern menu, select **ROI inspection and return**. Edit the ROI target and inspection waypoint. Insert additional maneuver waypoints before ROI clear. Keep the return waypoint and restored camera settings after the inspection.
-5. Use the Pattern menu to add a fiducial hold before search or a vantage assessment after search. Edit the default 60-second holds as needed. Review and upload the exported mission to the selected vehicle.
+1. Add a takeoff. In **Pattern**, select **Chimera fiducial**. Set latitude, longitude, altitude above home, aircraft heading, and **Delay until (s)** in its panel. Drag its map marker to move it. The delay uses `MAV_CMD_NAV_DELAY`, separate from waypoint hold time. Use a delay greater than 1 second; 0 and 1 are reserved markers.
+2. Add **Chimera survey**. Edit the area polygon on the map. Set aircraft heading, gimbal pitch, speed, track angle, lateral overlap, and calibrated camera intrinsics in the panel. The block includes mission arm (`NAV_DELAY(0)`), pitch, speed, and fixed waypoint headings.
+3. Select a numbered route point in the panel and press **Add ROI**. Edit the ROI target and inspection waypoint. Add further waypoints or ROI targets in execution order. The block inserts the return to that checkpoint and restores survey heading, altitude, pitch, speed, and camera triggering.
+4. Add **Chimera vantage** after the survey for assessment. Set its position, heading, and delay until. It includes the assessment marker (`NAV_DELAY(1)`).
+5. Save and upload the native plan through QGC. Each block stays one mission-list item. Its generated commands expand only for upload. Use the panel centre fields or map centre handle to move a survey and its inspection paths together.
 
-Use separate plans for each drone with QGC's normal vehicle selection. The standard 3D viewer can show exported missions. This draft does not add a fleet scheduler or a shared fleet project.
+Use separate plans for each drone with QGC's normal vehicle selection. Downloading a mission from an aircraft returns MAVLink commands; it cannot recover the source blocks. Keep the saved native plan.
 
-## Geometry
+## Survey and inspection rules
 
-The camera model uses rectified image dimensions and `fx`, `fy`, `cx`, and `cy` in pixels. The initial values are examples. Replace them with the calibration for the selected camera, zoom, and image crop. The optical bearing follows aircraft yaw. Gimbal pitch uses the runtime convention: -90 degrees points straight down.
+The polygon defines the required ground area. Cyan shows the aircraft route, including inspection paths. Orange shows sample camera footprints. The aircraft path is offset from the area to account for aircraft yaw and gimbal pitch. Pitch -90 degrees points down. Review numbered checkpoint positions after any change to survey geometry. Checkpoints are route-point indices; changing the route can change their locations.
 
-Corner rays intersect a horizontal ground plane. The planner fits a track-aligned square inside the resulting trapezoid. That square sets conservative track and capture spacing. Its center sets the offset between the required ground area and the aircraft path. QGC generates the flight legs and camera trigger commands.
+The camera model takes rectified image dimensions and `fx`, `fy`, `cx`, and `cy` in pixels. Initial values are examples. Use the calibration for the selected camera, zoom, and crop. Corner rays intersect flat ground at home height. A rectangle aligned with the tracks fits inside the projected footprint. Its width and lateral overlap set track spacing. Capture spacing uses its length with fixed 70% forward overlap. QGC generates the survey legs and trigger commands.
 
-The orange polygons are sampled footprints, not a coverage certificate. Cyan shows the path in the exported mission. The source polygon remains visible for editing. The cyan path replaces the native grid preview. An enabled source plan cannot upload through the normal Plan upload action. Export it first.
+An inspection stops camera triggering, applies the user-defined ROI targets and waypoints, clears ROI, and returns to its checkpoint. It then restores survey settings before continuing. ROI altitude means height above target terrain in the Chimera runtime. Inspection waypoint altitude is relative to home. Inspection points remain fixed when individual polygon vertices change; moving the whole survey moves them with it.
 
-## Inspection behavior
+Fiducials must precede the first search or assessment marker. Upload rejects invalid block settings and misplaced fiducials. Sample footprints do not prove full boundary coverage. Review turns, area edges, and inspection transitions.
 
-An inspection inserts camera-trigger stop, ROI location, an editable waypoint, ROI clear, return waypoint, gimbal pitch, search marker, settling waypoint, and camera-trigger restoration. Return waypoints retain the selected aircraft yaw and altitude. The initial maneuver waypoint duplicates the checkpoint so the operator can place it.
+## Scope
 
-The return checkpoint is an ordinary waypoint. It does not move automatically after later edits to the survey or inspection. Regenerate the export when survey geometry changes, then add the inspection again.
-
-The generated commands use the existing Chimera protocol: positive pre-region delays for fiducials, `NAV_DELAY(0)` for search, and `NAV_DELAY(1)` for assessment. ROI altitude means height above target terrain in the Chimera runtime. Review that value even though QGC uses its normal altitude editor.
-
-## Limits
-
-- Flat ground at home height and relative altitude only. No terrain-aware coverage or obstacle clearance checks.
-- Rectified pinhole camera with body-follow bearing. No lens distortion model or independent gimbal yaw.
-- Constant yaw requires suitable multirotor firmware behavior. No flight or simulator execution test was part of this draft.
-- No automatic coverage-gap proof, fleet deconfliction, linked survey undo, or simulation-scene importer.
-- Mission jumps block export because expansion changes sequence references.
+- Relative altitude and flat ground only. No terrain coverage or obstacle clearance checks.
+- Aircraft yaw controls optical bearing. No independent gimbal yaw or lens distortion model.
+- Inspection paths support editable waypoints and multiple ROI targets. Arbitrary nested QGC commands and inspection-point drag handles are not included.
+- Native flight-path segments support QGC's existing altitude display. No PX4 scene importer or embedded Gazebo view is added.
+- No fleet scheduler, collision avoidance between drones, or new undo system.
+- Earlier offset-survey source files retain their export controls. New missions should use the native Chimera patterns.
 
 ## Build and focused checks
-
-Build from the repository root with the existing Qt installation:
 
 ```sh
 cmake -S . -B build -DCMAKE_PREFIX_PATH=/home/user/Qt/6.8.3/gcc_64
 cmake --build build -j 12
 ```
 
-`tests/coverage_test.cc` checks nadir geometry, overlap, yaw rotation, the conservative square, and invalid rays. The optional `QGC_PLANNER_SMOKE_TEST` build option enables the offline function check. Set `QGC_PLANNER_SMOKE=1` when starting that build to check preview, export, reload, ROI insertion, settings persistence, and QML components. Use a temporary configuration directory for the check.
+`tests/coverage_test.cc` checks camera geometry, lateral overlap, rotation, rectangle containment, and invalid rays. Enable `QGC_PLANNER_SMOKE_TEST` at build time and set `QGC_PLANNER_SMOKE=1` at launch for the offline function check. It checks native blocks, command order, delay semantics, offset routes, ROI return, grouped movement, save/load, and QML loading. Use an isolated configuration with vehicle connections disabled. These checks do not test aircraft execution.

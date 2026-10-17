@@ -454,8 +454,9 @@ VisualMissionItem* MissionController::insertComplexMissionItem(QString itemName,
     } else if (itemName == CorridorScanComplexItem::name) {
         newItem = new CorridorScanComplexItem(_masterController, _flyView, QString() /* kmlOrShpFile */);
     } else {
-        qWarning() << "Internal error: Unknown complex item:" << itemName;
-        return nullptr;
+        newItem = QGCCorePlugin::instance()->createComplexMissionItem(itemName, _masterController, _flyView);
+        if (!newItem) return nullptr;
+        newItem->setCoordinate(mapCenterCoordinate);
     }
 
     _insertComplexMissionItemWorker(mapCenterCoordinate, newItem, visualItemIndex, makeCurrentItem);
@@ -876,7 +877,17 @@ bool MissionController::_loadJsonMissionFileV2(const QJsonObject& json, QmlObjec
                 qCDebug(MissionControllerLog) << "Corridor Scan load complete: nextSequenceNumber" << nextSequenceNumber;
                 visualItems->append(corridorItem);
             } else {
-                errorString = tr("Unsupported complex item type: %1").arg(complexItemType);
+                auto* customItem = QGCCorePlugin::instance()->createComplexMissionItem(complexItemType, _masterController, _flyView);
+                if (!customItem) {
+                    errorString = tr("Unsupported complex item type: %1").arg(complexItemType);
+                    return false;
+                }
+                if (!customItem->load(itemObject, nextSequenceNumber, errorString)) {
+                    delete customItem;
+                    return false;
+                }
+                nextSequenceNumber = customItem->lastSequenceNumber() + 1;
+                visualItems->append(customItem);
             }
         } else {
             errorString = tr("Unknown item type: %1").arg(itemType);

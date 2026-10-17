@@ -2,6 +2,7 @@
     <qresource prefix="/Planner">
         <file alias="SurveyEditor.qml">src/SurveyEditor.qml</file>
         <file alias="SurveyOverlay.qml">src/SurveyOverlay.qml</file>
-        <file alias="WorkflowTools.qml">src/WorkflowTools.qml</file>
+        <file alias="BlockEditor.qml">src/BlockEditor.qml</file>
+        <file alias="BlockMap.qml">src/BlockMap.qml</file>
     </qresource>
 </RCC>

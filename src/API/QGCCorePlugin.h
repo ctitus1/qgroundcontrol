@@ -32,6 +32,8 @@ typedef struct __mavlink_message mavlink_message_t;
 
 Q_DECLARE_LOGGING_CATEGORY(QGCCorePluginLog)
 
+class ComplexMissionItem;
+
 class QGCCorePlugin : public QObject
 {
     Q_OBJECT
@@ -152,6 +154,8 @@ public:
     /// Returns the user visible url to show user where to download new stable builds from.
     /// Custom builds must override to provide their own location.
     virtual QString stableDownloadLocation() const { return QStringLiteral("qgroundcontrol.com"); }
+
+    virtual ComplexMissionItem* createComplexMissionItem(const QString& type, PlanMasterController* controller, bool flyView) { Q_UNUSED(type); Q_UNUSED(controller); Q_UNUSED(flyView); return nullptr; }
 
     /// Returns the complex mission items to display in the Plan UI
     /// @param complexMissionItemNames Default set of complex items

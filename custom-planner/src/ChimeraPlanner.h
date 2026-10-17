@@ -18,13 +18,12 @@ public:
     Q_INVOKABLE void setSetting(QObject* item, const QString& key, const QVariant& value);
     Q_INVOKABLE QVariantMap preview(QObject* item);
     Q_INVOKABLE QString exportPlan(QObject* item, const QString& filename);
-    Q_INVOKABLE QString insertBlock(QObject* controller, const QString& kind);
     void saveSettings(PlanMasterController* controller, QJsonObject& mission);
     void loadSettings(PlanMasterController* controller, const QJsonObject& plan);
+    bool buildSurvey(SurveyComplexItem* source, QList<MissionItem*>& items, QObject* owner,
+                     QVariantList& path, QString& error);
 signals:
     void settingsChanged(QObject* item);
 private:
     CoverageGeometry::Footprint footprint(SurveyComplexItem* survey) const;
-    bool buildSurvey(SurveyComplexItem* source, QList<MissionItem*>& items, QObject* owner,
-                     QVariantList& path, QString& error);
 };

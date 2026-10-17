@@ -15,6 +15,9 @@ struct Footprint {
     QList<QPointF> corners;
     QPointF center;
     double spacing = 0;
+    double captureDistance = 0;
+    double halfAcross = 0;
+    double halfAlong = 0;
     QString error;
 };
 
@@ -56,17 +59,24 @@ inline Footprint project(const Camera& camera, double altitude, double yaw, doub
     }
     const QPointF along(std::sin(trackAngle * radians), std::cos(trackAngle * radians));
     const QPointF across(along.y(), -along.x());
-    double halfSide = std::numeric_limits<double>::max();
+    double halfAcross = 0, halfAlong = 0;
+    for (const auto& corner : result.corners) {
+        halfAcross = std::max(halfAcross, std::abs(QPointF::dotProduct(corner - result.center, across)));
+        halfAlong = std::max(halfAlong, std::abs(QPointF::dotProduct(corner - result.center, along)));
+    }
+    double scale = 1;
     for (int i = 0; i < 4; ++i) {
         const QPointF edge = result.corners[(i + 1) % 4] - result.corners[i];
         const QPointF normal(-edge.y(), edge.x());
         const double distance = std::abs(QPointF::dotProduct(normal, result.center - result.corners[i]));
-        const double extent = std::abs(QPointF::dotProduct(normal, along)) +
-                              std::abs(QPointF::dotProduct(normal, across));
-        halfSide = std::min(halfSide, distance / extent);
+        const double extent = halfAlong * std::abs(QPointF::dotProduct(normal, along)) +
+                              halfAcross * std::abs(QPointF::dotProduct(normal, across));
+        scale = std::min(scale, distance / extent);
     }
-    // A track-aligned square inside the trapezoid bounds both spacing and capture distance.
-    result.spacing = 2 * halfSide * (1 - overlap / 100);
+    result.halfAcross = halfAcross * scale;
+    result.halfAlong = halfAlong * scale;
+    result.spacing = 2 * result.halfAcross * (1 - overlap / 100);
+    result.captureDistance = 2 * result.halfAlong * 0.3;
     if (!std::isfinite(result.spacing) || result.spacing < 0.5) {
         result.error = "The calculated spacing is below 0.5 m. Adjust the camera settings or overlap.";
     }
