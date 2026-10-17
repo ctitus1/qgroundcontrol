@@ -96,9 +96,11 @@ QPair<QJsonArray, QJsonArray> cutRoute(const QJsonArray& commands, double fracti
 ChimeraMissionItem::ChimeraMissionItem(PlanMasterController* master, bool flyView,
                                      const QString& kind, ChimeraPlanner* planner)
     : ComplexMissionItem(master, flyView), _kind(kind), _planner(planner),
-      _survey(new SurveyComplexItem(master, flyView, QString()))
+      _survey(new SurveyComplexItem(master, flyView, QString())),
+      _flightSurvey(new SurveyComplexItem(master, flyView, QString()))
 {
     _survey->setParent(this);
+    _flightSurvey->setParent(this);
     _editorQml = "qrc:/Planner/BlockEditor.qml";
     _values = planner->settings(nullptr);
     _values["enabled"] = true;
@@ -129,7 +131,20 @@ ChimeraMissionItem::ChimeraMissionItem(PlanMasterController* master, bool flyVie
     _survey->cameraCalc()->setDistanceMode(QGroundControlQmlGlobal::AltitudeModeRelative);
     _survey->turnAroundDistance()->setRawValue(0);
     _survey->setWizardMode(false);
-    connect(surveyAreaPolygon(), &QGCMapPolygon::pathChanged, this, [this] { rebuild(); syncSurvey(); });
+    connect(surveyAreaPolygon(), &QGCMapPolygon::pathChanged, this, [this] {
+        if (_updating) return;
+        if (surveyAreaPolygon()->centerDrag()) {
+            const auto center = centerCoordinate();
+            const double distance = _lastCenter.distanceTo(center), azimuth = _lastCenter.azimuthTo(center);
+            moveInspectionPoints(_lastCenter, center);
+            _lastCenter = center;
+            emit surveyAreaPolygon()->centerChanged(center);
+            emit translated(distance, azimuth);
+            for (auto* part : linkedParts()) if (part != this) emit part->translated(distance, azimuth);
+            return;
+        }
+        rebuild(); syncSurvey();
+    });
     connect(surveyAreaPolygon(), &QGCMapPolygon::centerDragChanged, this, [this](bool dragging) {
         if (!dragging && !_updating) {
             moveInspectionPoints(_lastCenter, centerCoordinate());
@@ -325,8 +340,15 @@ void ChimeraMissionItem::rebuild()
             }
             _preview = {{"path", path}};
         } else {
-            built = _planner->buildSurvey(_survey, generated, &owner, path, _error);
-            if (built) _preview = _planner->preview(_survey);
+            auto parameters = _values;
+            parameters.remove("angle");
+            const bool configure = parameters != _generationValues;
+            if (configure) _generationValues.clear();
+            built = _planner->buildSurvey(_survey, generated, &owner, path, _error, _flightSurvey, configure);
+            if (built) {
+                _generationValues = parameters;
+                _preview = _planner->preview(_survey, path);
+            }
         }
         _generated = {};
         if (built) {

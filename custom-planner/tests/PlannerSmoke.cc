@@ -146,6 +146,16 @@ void schedulePlannerSmoke(QQmlApplicationEngine* engine, ChimeraPlanner*)
             const auto moved = survey->centerCoordinate().atDistanceAndAzimuth(30, 0);
             continuation->setCoordinate(moved);
             check(survey->surveyAreaPolygon()->coordinateList() == continuation->surveyAreaPolygon()->coordinateList(), "Shared polygon movement");
+            const auto beforeDrag = survey->route();
+            int translations = 0;
+            const auto dragConnection = QObject::connect(survey, &ChimeraMissionItem::translated, survey, [&](double, double) { ++translations; });
+            survey->surveyAreaPolygon()->setCenterDrag(true);
+            survey->surveyAreaPolygon()->setCenter(survey->centerCoordinate().atDistanceAndAzimuth(20, 90));
+            QEventLoop dragEvents; QTimer::singleShot(100, &dragEvents, &QEventLoop::quit); dragEvents.exec();
+            check(translations > 0 && survey->route() == beforeDrag, "Center drag translates visuals without rebuilding commands");
+            survey->surveyAreaPolygon()->setCenterDrag(false);
+            QObject::disconnect(dragConnection);
+            check(survey->route() != beforeDrag && survey->linkedSurveyError().isEmpty(), "Center release rebuilds linked survey commands");
             const auto editedVertex = survey->surveyAreaPolygon()->vertexCoordinate(0).atDistanceAndAzimuth(15, 270);
             survey->surveyAreaPolygon()->adjustVertex(0, editedVertex);
             QEventLoop polygonEvents; QTimer::singleShot(100, &polygonEvents, &QEventLoop::quit); polygonEvents.exec();
@@ -185,7 +195,12 @@ void schedulePlannerSmoke(QQmlApplicationEngine* engine, ChimeraPlanner*)
             survey->setIsCurrentItem(true);
             mapObject = canvas.create(&context);
             mapWidget = map.createWithInitialProperties({{"map", QVariant::fromValue(mapObject)}}, &context);
-            check(mapWidget, map.errorString()); delete mapWidget; delete mapObject;
+            check(mapWidget, map.errorString());
+            const auto mapItems = mapObject->children();
+            check(QMetaObject::invokeMethod(mapWidget, "refresh"), "Refresh pooled map visuals");
+            check(mapObject->children() == mapItems, "Unchanged map visuals reuse existing objects");
+            check(QMetaObject::invokeMethod(mapWidget, "translate", Q_ARG(QVariant, 10.), Q_ARG(QVariant, 90.)), "Translate pooled map visuals");
+            delete mapWidget; delete mapObject;
             for (int itemIndex : {2, 3, 6}) {
                 auto* item = qobject_cast<ChimeraMissionItem*>(mission->visualItems()->get(itemIndex));
                 context.setContextProperty("missionItem", item);

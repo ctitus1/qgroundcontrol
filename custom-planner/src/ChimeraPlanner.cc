@@ -1,3 +1,4 @@
+#include <memory>
 #include "ChimeraPlanner.h"
 #include "CameraCalc.h"
 #include "MissionController.h"
@@ -84,7 +85,7 @@ CoverageGeometry::Footprint ChimeraPlanner::footprint(SurveyComplexItem* survey)
 }
 
 bool ChimeraPlanner::buildSurvey(SurveyComplexItem* source, QList<MissionItem*>& items, QObject* owner,
-                                QVariantList& path, QString& error)
+                                QVariantList& path, QString& error, SurveyComplexItem* cached, bool configure)
 {
     const auto shape = footprint(source);
     error = shape.error;
@@ -98,27 +99,38 @@ bool ChimeraPlanner::buildSurvey(SurveyComplexItem* source, QList<MissionItem*>&
         error = tr("The survey is too dense. Increase the spacing or reduce the area.");
         return false;
     }
-    QJsonArray saved;
-    source->save(saved);
-    auto json = saved.first().toObject();
-    auto transect = json["TransectStyleComplexItem"].toObject();
-    auto calc = transect["CameraCalc"].toObject();
-    calc["CameraName"] = CameraCalc::canonicalManualCameraName();
-    calc["AdjustedFootprintSide"] = shape.spacing;
-    calc["AdjustedFootprintFrontal"] = shape.captureDistance;
-    transect["CameraCalc"] = calc;
-    transect["Items"] = QJsonArray();
-    json["TransectStyleComplexItem"] = transect;
-    SurveyComplexItem generated(source->masterController(), false, QString());
-    if (!generated.load(json, 1, error)) return false;
-    generated.setWizardMode(false);
-    generated.hoverAndCapture()->setRawValue(false);
-    generated.refly90Degrees()->setRawValue(false);
+    std::unique_ptr<SurveyComplexItem> temporary;
+    if (!cached) {
+        temporary = std::make_unique<SurveyComplexItem>(source->masterController(), false, QString());
+        cached = temporary.get();
+        configure = true;
+    }
+    auto& generated = *cached;
+    if (configure) {
+        QJsonArray saved;
+        source->save(saved);
+        auto json = saved.first().toObject();
+        auto transect = json["TransectStyleComplexItem"].toObject();
+        auto calc = transect["CameraCalc"].toObject();
+        calc["CameraName"] = CameraCalc::canonicalManualCameraName();
+        calc["AdjustedFootprintSide"] = shape.spacing;
+        calc["AdjustedFootprintFrontal"] = shape.captureDistance;
+        transect["CameraCalc"] = calc;
+        transect["Items"] = QJsonArray();
+        json["TransectStyleComplexItem"] = transect;
+        if (!generated.load(json, 1, error)) return false;
+        generated.setWizardMode(false);
+        generated.hoverAndCapture()->setRawValue(false);
+        generated.refly90Degrees()->setRawValue(false);
+    }
+    generated.cameraCalc()->adjustedFootprintSide()->setRawValue(shape.spacing);
+    generated.cameraCalc()->adjustedFootprintFrontal()->setRawValue(shape.captureDistance);
+    generated.gridAngle()->setRawValue(source->gridAngle()->rawValue());
     QList<QGeoCoordinate> polygon;
     for (const auto& point : source->surveyAreaPolygon()->coordinateList()) {
         polygon.append(translate(point, -shape.center));
     }
-    generated.surveyAreaPolygon()->setPath(polygon);
+    if (generated.surveyAreaPolygon()->coordinateList() != polygon) generated.surveyAreaPolygon()->setPath(polygon);
     generated.appendMissionItems(items, owner);
     const double yaw = settings(source)["yaw"].toDouble();
     for (auto* item : std::as_const(items)) {
@@ -143,6 +155,11 @@ QVariantMap ChimeraPlanner::preview(QObject* item)
     QVariantList path;
     QString error;
     if (!buildSurvey(survey, items, &owner, path, error)) return {{"error", error}};
+    return preview(survey, path);
+}
+
+QVariantMap ChimeraPlanner::preview(SurveyComplexItem* survey, const QVariantList& path) const
+{
     const auto shape = footprint(survey);
     QVariantList footprints;
     const int stride = std::max(1, int(path.size() / 80));

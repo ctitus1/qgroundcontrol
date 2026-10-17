@@ -90,6 +90,7 @@ public:
     double additionalTimeDelay() const override { return _kind == "survey" ? 0 : _values.value("delay").toDouble(); }
 signals:
     void changed();
+    void translated(double distance, double azimuth);
 private:
     void rebuild();
     void syncSurvey();
@@ -101,6 +102,8 @@ private:
     QString _kind;
     ChimeraPlanner* _planner;
     SurveyComplexItem* _survey;
+    SurveyComplexItem* _flightSurvey;
+    QVariantMap _generationValues;
     QVariantMap _values;
     QVariantMap _preview;
     QVariantList _route;

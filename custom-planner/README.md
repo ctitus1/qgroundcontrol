@@ -43,3 +43,5 @@ cmake --build build -j 12
 ```
 
 Enable `QGC_PLANNER_SMOKE_TEST` at build time and set `QGC_PLANNER_SMOKE=1` at launch for the offline function check. Use an isolated configuration with vehicle connections disabled. The check covers command order, source edits across linked parts, split movement and removal, manual item preservation, persistence, Fact field widths, and map controls. It renders each panel at 240 pixels wide. These checks do not test aircraft execution.
+
+Center drags move the existing map paths and rebuild flight commands on release. Resizing reuses the survey generator and map objects; previews use the generated route.

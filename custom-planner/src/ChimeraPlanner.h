@@ -21,7 +21,8 @@ public:
     void saveSettings(PlanMasterController* controller, QJsonObject& mission);
     void loadSettings(PlanMasterController* controller, const QJsonObject& plan);
     bool buildSurvey(SurveyComplexItem* source, QList<MissionItem*>& items, QObject* owner,
-                     QVariantList& path, QString& error);
+                     QVariantList& path, QString& error, SurveyComplexItem* cached = nullptr, bool configure = true);
+    QVariantMap preview(SurveyComplexItem* survey, const QVariantList& path) const;
 signals:
     void settingsChanged(QObject* item);
 private:

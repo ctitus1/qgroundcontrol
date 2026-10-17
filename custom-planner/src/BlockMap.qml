@@ -11,22 +11,52 @@ Item {
     property var vehicle
     property bool interactive: true
     property var block: object
-    property var objects: []
+    property var pools: ({})
+    property var used: ({})
     signal clicked(int sequenceNumber)
     function report(error) { if (error) mainWindow.showMessageDialog(qsTr("Survey split"), error) }
     function clear() {
-        for (var item of objects) { map.removeMapItem(item); item.destroy() }
-        objects = []
+        for (var key in pools) for (var item of pools[key]) { map.removeMapItem(item); item.destroy() }
+        pools = ({})
     }
     function add(component, properties) {
-        var item = component.createObject(map, properties)
-        map.addMapItem(item)
-        objects.push(item)
+        var key = component.toString()
+        var pool = pools[key] || []
+        var index = used[key] || 0
+        var item = pool[index]
+        if (!item) {
+            item = component.createObject(map, properties)
+            map.addMapItem(item)
+            pool.push(item)
+            pools[key] = pool
+        } else {
+            for (var name in properties) item[name] = properties[name]
+        }
+        used[key] = index + 1
+    }
+    function trim() {
+        for (var key in pools) {
+            var pool = pools[key]
+            while (pool.length > (used[key] || 0)) {
+                var item = pool.pop()
+                map.removeMapItem(item)
+                item.destroy()
+            }
+        }
+    }
+    function translate(distance, azimuth) {
+        for (var key in pools) for (var item of pools[key]) {
+            if (item.path !== undefined) {
+                var path = []
+                for (var point of item.path) path.push(point.atDistanceAndAzimuth(distance, azimuth))
+                item.path = path
+            } else item.coordinate = item.coordinate.atDistanceAndAzimuth(distance, azimuth)
+        }
     }
     function refresh() {
-        clear()
+        used = ({})
         add(line, { path: block.route })
-        if (block.kind === "survey") add(marker, { coordinate: block.coordinate, label: block.abbreviation })
+        if (block.kind === "survey") add(marker, { coordinate: block.coordinate, label: block.abbreviation, routePoint: -1 })
         if (block.isCurrentItem && block.kind === "survey") {
             for (var corners of (block.preview.footprints || [])) add(footprint, {path: corners})
             var path = block.preview.path || []
@@ -34,16 +64,18 @@ Item {
             if (root.interactive) for (var point of block.splitHandles) add(splitHandle, {coordinate: point})
             for (var inspection of block.inspections) {
                 for (var point of inspection.points) {
-                    add(marker, {coordinate: QtPositioning.coordinate(point.latitude, point.longitude), label: point.roi ? "ROI" : "I"})
+                    add(marker, {coordinate: QtPositioning.coordinate(point.latitude, point.longitude), label: point.roi ? "ROI" : "I", routePoint: -1})
                 }
             }
         }
+        trim()
     }
     Component.onCompleted: refresh()
     Component.onDestruction: clear()
     Connections {
         target: root.block
-        function onChanged() { timer.restart() }
+        function onChanged() { if (!timer.running) timer.start() }
+        function onTranslated(distance, azimuth) { timer.stop(); root.translate(distance, azimuth) }
         function onIsCurrentItemChanged() { timer.restart() }
     }
     Timer { id: timer; interval: 50; onTriggered: root.refresh() }
