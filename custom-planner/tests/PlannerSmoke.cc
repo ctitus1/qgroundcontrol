@@ -1,4 +1,7 @@
 #include "ChimeraPlanner.h"
+#include "SettingsManager.h"
+#include "AppSettings.h"
+#include "Fact.h"
 #include "ChimeraMissionItem.h"
 #include "PlanMasterController.h"
 #include "MissionController.h"
@@ -31,13 +34,30 @@ void schedulePlannerSmoke(QQmlApplicationEngine* engine, ChimeraPlanner*)
         try {
             PlanMasterController plan; plan.start();
             auto* mission = plan.missionController();
+            SettingsManager::instance()->appSettings()->defaultMissionItemAltitude()->setRawValue(53.);
             QGeoCoordinate origin(38.313294, -76.55221, 40);
             mission->insertTakeoffItem(origin, 1);
             auto* fiducial = qobject_cast<ChimeraMissionItem*>(mission->insertComplexMissionItem("Chimera fiducial", origin, 2));
             auto* survey = qobject_cast<ChimeraMissionItem*>(mission->insertComplexMissionItem("Chimera survey", origin, 3));
             check(fiducial && survey, "Native block creation");
+            check(survey->values()["altitude"].toDouble() == 53 && survey->values()["speed"].toDouble() == 1 &&
+                  survey->values()["pitch"].toDouble() == -70 && survey->values()["overlap"].toDouble() == 25, "New survey defaults");
+            check(survey->cameraPresets().size() == 9, "Eight aircraft camera presets and Custom");
+            for (int preset = 1; preset <= 8; ++preset) {
+                survey->setCameraPreset(preset);
+                const auto config = survey->cameraPresets()[preset].toMap();
+                const auto matrix = config["camera_matrix"].toMap()["data"].toList();
+                check(survey->cameraPreset() == preset && survey->values()["width"] == config["image_width"] &&
+                      survey->values()["fx"] == matrix[0] && survey->values()["cy"] == matrix[5] && survey->error().isEmpty(), "Camera preset uses source intrinsics");
+            }
+            survey->setValue("fx", 1200);
+            check(survey->cameraPreset() == 0, "Manual camera edit selects Custom");
+            survey->setCameraPreset(5);
+            survey->setValue("angle", 19);
+            check(survey->values()["yaw"].toDouble() == 19, "Track angle changes heading");
             fiducial->setValue("delay", 45); fiducial->setValue("yaw", 23);
             survey->setValue("yaw", 37); survey->setValue("pitch", -50);
+            check(survey->values()["angle"].toDouble() == 37, "Heading changes track angle");
             check(survey->error().isEmpty(), survey->error());
             check(survey->preview()["offset"].toDouble() > 10, "Offset path");
             const auto checkpoint = survey->preview()["path"].toList()[1].value<QGeoCoordinate>();
@@ -85,6 +105,7 @@ void schedulePlannerSmoke(QQmlApplicationEngine* engine, ChimeraPlanner*)
             check(mission->load(saved["mission"].toObject(), error), error);
             check(mission->visualItems()->count() == 4, "Block count after reload");
             survey = qobject_cast<ChimeraMissionItem*>(mission->visualItems()->get(3));
+            check(survey->cameraPreset() == 5, "Camera preset persists");
             check(survey && survey->inspections().size() == 1 && survey->values()["yaw"].toDouble() == 37, "Native persistence");
             QQmlContext context(engine->rootContext());
             context.setContextProperty("missionItem", survey);
@@ -141,6 +162,8 @@ void schedulePlannerSmoke(QQmlApplicationEngine* engine, ChimeraPlanner*)
             continuation->setValue("yaw", 42);
             continuation->setValue("angle", 25);
             continuation->setValue("overlap", 65);
+            continuation->setCameraPreset(2);
+            check(survey->cameraPreset() == 2, "Camera preset applies to all linked parts");
             check(survey->values() == continuation->values(), "Shared flight and camera settings");
             check(survey->exitCoordinate().distanceTo(continuation->coordinate()) < 0.01, "Regenerated split boundary");
             const auto moved = survey->centerCoordinate().atDistanceAndAzimuth(30, 0);
@@ -171,7 +194,7 @@ void schedulePlannerSmoke(QQmlApplicationEngine* engine, ChimeraPlanner*)
             check(mission->load(saved["mission"].toObject(), error), error);
             survey = qobject_cast<ChimeraMissionItem*>(mission->visualItems()->get(3));
             continuation = qobject_cast<ChimeraMissionItem*>(mission->visualItems()->get(5));
-            check(survey->linkedSurveyError().isEmpty() && survey->values()["yaw"].toDouble() == 42, "Edited source persists");
+            check(survey->linkedSurveyError().isEmpty() && survey->values()["yaw"].toDouble() == 25, "Edited source persists");
             auto legacyMission = saved["mission"].toObject();
             auto legacyItems = legacyMission["items"].toArray();
             int legacyPart = 0;

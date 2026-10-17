@@ -51,7 +51,7 @@ QJsonObject serialize(MissionItem* item, int sequence)
 
 QVariantMap ChimeraPlanner::settings(QObject* item) const
 {
-    QVariantMap values{{"enabled", false}, {"yaw", 0.0}, {"pitch", -45.0}, {"overlap", 70.0},
+    QVariantMap values{{"enabled", false}, {"yaw", 0.0}, {"pitch", -70.0}, {"overlap", 25.0},
         {"width", 1920.0}, {"height", 1080.0}, {"fx", 1200.0}, {"fy", 1200.0},
         {"cx", 960.0}, {"cy", 540.0}};
     if (item) {

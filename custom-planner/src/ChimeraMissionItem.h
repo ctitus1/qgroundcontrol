@@ -14,6 +14,8 @@ class ChimeraMissionItem : public ComplexMissionItem
     Q_OBJECT
     Q_MOC_INCLUDE("QGCMapPolygon.h")
     Q_MOC_INCLUDE("Fact.h")
+    Q_PROPERTY(QVariantList cameraPresets READ cameraPresets CONSTANT)
+    Q_PROPERTY(int cameraPreset READ cameraPreset NOTIFY changed)
     Q_PROPERTY(bool hasEndSplit READ hasEndSplit NOTIFY changed)
     Q_PROPERTY(bool linkedSurvey READ linkedSurvey NOTIFY changed)
     Q_PROPERTY(QVariantList splitHandles READ splitHandles NOTIFY changed)
@@ -28,6 +30,9 @@ class ChimeraMissionItem : public ComplexMissionItem
     Q_PROPERTY(QGeoCoordinate centerCoordinate READ centerCoordinate WRITE setCoordinate NOTIFY changed)
 public:
     ChimeraMissionItem(PlanMasterController* master, bool flyView, const QString& kind, ChimeraPlanner* planner);
+    QVariantList cameraPresets() const;
+    int cameraPreset() const;
+    Q_INVOKABLE void setCameraPreset(int index);
     Q_INVOKABLE Fact* fact(const QString& key) const { return _facts.value(key); }
     bool hasEndSplit() const { return !_groupId.isEmpty() && _end < 1; }
     bool linkedSurvey() const { return !_groupId.isEmpty(); }
@@ -111,6 +116,8 @@ private:
     QList<MissionItem*> _commands;
     QMap<QString, Fact*> _facts;
     QString _groupId;
+    QString _cameraPreset;
+    QString _syncedCameraPreset;
     QVariantMap _syncedValues;
     QList<QGeoCoordinate> _syncedPolygon;
     double _start = 0, _end = 1;

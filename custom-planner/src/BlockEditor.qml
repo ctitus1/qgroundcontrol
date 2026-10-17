@@ -10,13 +10,13 @@ Rectangle {
     width: availableWidth
     height: editorColumn.height + margin * 2
     implicitHeight: height
-    color: palette.windowShadeDark
+    color: qgcPal.windowShadeDark
     radius: ScreenTools.defaultFontPixelWidth / 2
     property var block: missionItem
     property real margin: ScreenTools.defaultFontPixelHeight / 2
     property real fieldWidth: Math.min(Math.max(120, ScreenTools.defaultFontPixelWidth * 18), (width - margin * 2) * 0.62)
     property string notice: ""
-    QGCPalette { id: palette; colorGroupEnabled: root.enabled }
+    QGCPalette { id: qgcPal; colorGroupEnabled: root.enabled }
 
     ColumnLayout {
         id: editorColumn
@@ -47,15 +47,15 @@ Rectangle {
             Repeater {
                 model: root.block.kind === "survey" ? [
                     ["latitude", "Latitude"], ["longitude", "Longitude"], ["altitude", "Altitude"],
-                    ["yaw", "Heading"], ["pitch", "Gimbal pitch"], ["speed", "Speed"],
-                    ["angle", "Track angle"], ["overlap", "Side overlap"]
+                    ["speed", "Speed"], ["pitch", "Gimbal pitch"], ["overlap", "Side overlap"],
+                    ["yaw", "Heading"], ["angle", "Track angle"]
                 ] : [["latitude", "Latitude"], ["longitude", "Longitude"], ["altitude", "Altitude"],
                      ["yaw", "Heading"], ["delay", "Delay until"], ["speed", "Speed"]]
                 delegate: RowLayout {
                     required property var modelData
                     Layout.fillWidth: true
                     spacing: root.margin / 2
-                    QGCLabel { text: modelData[1]; Layout.fillWidth: true; Layout.minimumWidth: 0; wrapMode: Text.WordWrap }
+                    QGCLabel { text: modelData[1]; Layout.fillWidth: true; Layout.minimumWidth: 0; wrapMode: Text.Wrap }
                     FactTextField {
                         objectName: "field_" + modelData[0]
                         Layout.preferredWidth: root.fieldWidth
@@ -67,6 +67,41 @@ Rectangle {
                 }
             }
         }
+        QGCSlider {
+            objectName: "headingSlider"
+            visible: root.block.kind === "survey" && flightHeader.checked
+            enabled: !root.block.splitPart
+            Layout.fillWidth: true
+            from: 0; to: 359; stepSize: 1
+            value: root.block.values.yaw
+            onMoved: root.block.setValue("yaw", value)
+            Accessible.name: qsTr("Heading and track angle")
+        }
+        QGCLabel {
+            visible: root.block.kind === "survey" && flightHeader.checked
+            Layout.fillWidth: true; wrapMode: Text.WordWrap
+            font.pointSize: ScreenTools.smallFontPointSize
+            text: qsTr("Heading and track angle change together.")
+        }
+        QGCLabel { text: qsTr("Camera"); visible: root.block.kind === "survey" }
+        QGCComboBox {
+            objectName: "cameraPresetSelector"
+            visible: root.block.kind === "survey"
+            enabled: !root.block.splitPart
+            Layout.fillWidth: true; Layout.minimumWidth: 0
+            model: root.block.cameraPresets
+            textRole: "label"
+            currentIndex: root.block.cameraPreset
+            sizeToContents: true
+            onActivated: (index) => root.block.setCameraPreset(index)
+            Accessible.name: qsTr("Aircraft and camera preset")
+        }
+        QGCLabel {
+            Layout.fillWidth: true; Layout.minimumWidth: 0; wrapMode: Text.WordWrap
+            visible: root.block.kind === "survey" && text.length > 0
+            text: root.block.cameraPresets[root.block.cameraPreset].note || ""
+            color: "orange"
+        }
         SectionHeader {
             id: cameraHeader; objectName: "cameraSection"
             text: qsTr("Camera intrinsics"); checked: false
@@ -76,13 +111,18 @@ Rectangle {
             visible: cameraHeader.visible && cameraHeader.checked
             Layout.fillWidth: true
             spacing: root.margin / 2
+            QGCLabel {
+                Layout.fillWidth: true; Layout.minimumWidth: 0; wrapMode: Text.WordWrap
+                font.pointSize: ScreenTools.smallFontPointSize
+                text: qsTr("camera_matrix (pixels):\n[fx, 0, cx; 0, fy, cy; 0, 0, 1]\nEditing these values selects Custom.")
+            }
             Repeater {
-                model: root.block.kind === "survey" ? [["width", "Image width"], ["height", "Image height"], ["fx", "fx"], ["fy", "fy"], ["cx", "cx"], ["cy", "cy"]] : []
+                model: root.block.kind === "survey" ? [["width", "image_width"], ["height", "image_height"], ["fx", "fx"], ["fy", "fy"], ["cx", "cx"], ["cy", "cy"]] : []
                 delegate: RowLayout {
                     required property var modelData
                     Layout.fillWidth: true
                     spacing: root.margin / 2
-                    QGCLabel { text: modelData[1]; Layout.fillWidth: true; Layout.minimumWidth: 0; wrapMode: Text.WordWrap }
+                    QGCLabel { text: modelData[1]; Layout.fillWidth: true; Layout.minimumWidth: 0; wrapMode: Text.Wrap }
                     FactTextField {
                         objectName: "field_" + modelData[0]
                         Layout.preferredWidth: root.fieldWidth

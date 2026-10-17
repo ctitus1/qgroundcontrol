@@ -45,3 +45,9 @@ cmake --build build -j 12
 Enable `QGC_PLANNER_SMOKE_TEST` at build time and set `QGC_PLANNER_SMOKE=1` at launch for the offline function check. Use an isolated configuration with vehicle connections disabled. The check covers command order, source edits across linked parts, split movement and removal, manual item preservation, persistence, Fact field widths, and map controls. It renders each panel at 240 pixels wide. These checks do not test aircraft execution.
 
 Center drags move the existing map paths and rebuild flight commands on release. Resizing reuses the survey generator and map objects; previews use the generated route.
+
+New blocks use QGC's default flight altitude and a speed of 1 m/s. New surveys use a gimbal pitch of -70 degrees and 25% side overlap. The slider and numeric angle fields change heading and track angle together. Loading an older plan preserves its saved angles until either is edited.
+
+The camera list contains Custom and eight named aircraft/camera presets: UAS1–2 rgb_mid and thermal, and UAS3–4 pilot and thermal. Selecting a preset applies all six intrinsic values at once. Editing an intrinsic selects Custom. The preset and numeric values are saved with the plan and shared by linked survey parts.
+
+`CameraPresets.json` contains the ROS calibration fields from `5g_drone/config/camera_calibration_files/uas*-*.yaml` (local source snapshot, 2026-10-17). Planning uses `image_width`, `image_height`, and `camera_matrix.data` (K), not the projection matrix. The source distortion and rectification fields are retained for reference; coverage still uses the pinhole model. Source files marked as borrowed placeholders have a visible note in the selector panel. Presets are bundled and do not change when the external source files change.

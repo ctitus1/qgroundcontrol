@@ -9,6 +9,10 @@
 #include <QJsonObject>
 #include <QScopedValueRollback>
 #include <QUuid>
+#include "SettingsManager.h"
+#include "AppSettings.h"
+#include <QFile>
+#include <QJsonDocument>
 #include "Fact.h"
 #include "FactMetaData.h"
 
@@ -104,17 +108,19 @@ ChimeraMissionItem::ChimeraMissionItem(PlanMasterController* master, bool flyVie
     _editorQml = "qrc:/Planner/BlockEditor.qml";
     _values = planner->settings(nullptr);
     _values["enabled"] = true;
-    _values["altitude"] = 40.;
-    _values["speed"] = 5.;
+    _values["altitude"] = SettingsManager::instance()->appSettings()->defaultMissionItemAltitude()->rawValue();
+    _values["speed"] = 1.;
     _values["delay"] = 60.;
     _values["angle"] = 0.;
-    _values["pitch"] = kind == "fiducial" ? -90. : -45.;
+    _values["pitch"] = -70.;
     auto keys = _values.keys(); keys.append("latitude"); keys.append("longitude");
     for (const auto& key : keys) {
         if (key == "enabled") continue;
         auto* field = new Fact(0, key, FactMetaData::valueTypeDouble, this);
         auto* metadata = field->metaData();
-        metadata->setDecimalPlaces(key == "latitude" || key == "longitude" ? 7 : 1);
+        metadata->setDecimalPlaces(key == "latitude" || key == "longitude" ? 7 :
+            QStringList{"fx", "fy", "cx", "cy"}.contains(key) ? 6 :
+            key == "width" || key == "height" ? 0 : 1);
         if (key == "altitude") { metadata->setRawUnits("m"); metadata->setRawMin(0.1); }
         if (key == "speed") { metadata->setRawUnits("m/s"); metadata->setRawMin(0.1); }
         if (key == "delay") { metadata->setRawUnits("s"); metadata->setRawMin(1.01); }
@@ -233,6 +239,39 @@ void ChimeraMissionItem::setCoordinate(const QGeoCoordinate& c)
     }
     rebuild(); syncSurvey();
 }
+QVariantList ChimeraMissionItem::cameraPresets() const
+{
+    static const QVariantList presets = [] {
+        QFile file(":/Planner/CameraPresets.json");
+        if (!file.open(QIODevice::ReadOnly)) return QVariantList{};
+        return QJsonDocument::fromJson(file.readAll()).array().toVariantList();
+    }();
+    return presets;
+}
+
+int ChimeraMissionItem::cameraPreset() const
+{
+    const auto presets = cameraPresets();
+    for (int i = 1; i < presets.size(); ++i) if (presets[i].toMap()["id"].toString() == _cameraPreset) return i;
+    return 0;
+}
+
+void ChimeraMissionItem::setCameraPreset(int index)
+{
+    const auto presets = cameraPresets();
+    if (!isSurveyItem() || splitPart() || index < 0 || index >= presets.size()) return;
+    const auto preset = presets[index].toMap();
+    _cameraPreset = preset["id"].toString();
+    if (index > 0) {
+        const auto matrix = preset["camera_matrix"].toMap()["data"].toList();
+        _values["width"] = preset["image_width"];
+        _values["height"] = preset["image_height"];
+        _values["fx"] = matrix[0]; _values["fy"] = matrix[4];
+        _values["cx"] = matrix[2]; _values["cy"] = matrix[5];
+    }
+    rebuild(); syncSurvey();
+}
+
 void ChimeraMissionItem::setValue(const QString& key, double value)
 {
     if (!std::isfinite(value)) return;
@@ -243,7 +282,14 @@ void ChimeraMissionItem::setValue(const QString& key, double value)
         return;
     }
     if (splitPart() && key != "speed") return;
-    if (!_values.contains(key) || _values[key] == value) return;
+    if (!_values.contains(key)) return;
+    const bool angle = isSurveyItem() && (key == "yaw" || key == "angle");
+    if (_values[key] == value && (!angle || (_values["yaw"] == value && _values["angle"] == value))) return;
+    if (angle) {
+        if (value < 0 || value >= 360) return;
+        _values["yaw"] = value; _values["angle"] = value;
+    }
+    if (QStringList{"width", "height", "fx", "fy", "cx", "cy"}.contains(key)) _cameraPreset.clear();
     _values[key] = value;
     rebuild(); syncSurvey();
 }
@@ -342,6 +388,8 @@ void ChimeraMissionItem::rebuild()
         } else {
             auto parameters = _values;
             parameters.remove("angle");
+            parameters.remove("yaw");
+            parameters.remove("speed");
             const bool configure = parameters != _generationValues;
             if (configure) _generationValues.clear();
             built = _planner->buildSurvey(_survey, generated, &owner, path, _error, _flightSurvey, configure);
@@ -467,7 +515,7 @@ void ChimeraMissionItem::save(QJsonArray& items)
     QJsonArray polygon;
     for (const auto& c : surveyAreaPolygon()->coordinateList()) polygon.append(QJsonArray{c.latitude(), c.longitude()});
     items.append(QJsonObject{{"type", "ComplexItem"}, {"complexItemType", "chimera-" + _kind}, {"version", linkedSurvey() ? 3 : splitPart() ? 2 : 1},
-        {"values", QJsonObject::fromVariantMap(_values)}, {"position", QJsonArray{_position.latitude(), _position.longitude()}},
+        {"cameraPreset", _cameraPreset}, {"values", QJsonObject::fromVariantMap(_values)}, {"position", QJsonArray{_position.latitude(), _position.longitude()}},
         {"polygon", polygon}, {"surveyGroup", _groupId}, {"rangeStart", _start}, {"rangeEnd", _end}, {"frozenRoute", _frozen}, {"resume", _resume}, {"inspections", QJsonArray::fromVariantList(_inspections)}});
 }
 bool ChimeraMissionItem::load(const QJsonObject& json, int sequence, QString& error)
@@ -491,6 +539,8 @@ bool ChimeraMissionItem::load(const QJsonObject& json, int sequence, QString& er
         for (const auto& p : json["polygon"].toArray()) { const auto a = p.toArray(); polygon.append(QGeoCoordinate(a[0].toDouble(), a[1].toDouble())); }
         surveyAreaPolygon()->setPath(polygon);
         _inspections = json["inspections"].toArray().toVariantList();
+        _cameraPreset = json["cameraPreset"].toString();
+        _syncedCameraPreset = _cameraPreset;
         _groupId = json["surveyGroup"].toString();
         _start = json["rangeStart"].toDouble(0); _end = json["rangeEnd"].toDouble(1);
         if (version == 3 && (_groupId.isEmpty() || !std::isfinite(_start) || !std::isfinite(_end) || _start < 0 || _end > 1 || _start >= _end)) {
@@ -522,12 +572,13 @@ void ChimeraMissionItem::syncSurvey()
 {
     if (_updating || !linkedSurvey()) return;
     const auto polygon = surveyAreaPolygon()->coordinateList();
-    if (_syncedValues == _values && _syncedPolygon == polygon) return;
-    _syncedValues = _values; _syncedPolygon = polygon;
+    if (_syncedValues == _values && _syncedPolygon == polygon && _syncedCameraPreset == _cameraPreset) return;
+    _syncedValues = _values; _syncedPolygon = polygon; _syncedCameraPreset = _cameraPreset;
     for (auto* item : linkedParts()) {
-        if (item == this || (item->_values == _values && item->surveyAreaPolygon()->coordinateList() == surveyAreaPolygon()->coordinateList() && item->_position == _position)) continue;
+        if (item == this || (item->_cameraPreset == _cameraPreset && item->_values == _values && item->surveyAreaPolygon()->coordinateList() == surveyAreaPolygon()->coordinateList() && item->_position == _position)) continue;
         {
             QScopedValueRollback<bool> guard(item->_updating, true);
+            item->_cameraPreset = _cameraPreset; item->_syncedCameraPreset = _cameraPreset;
             item->_values = _values;
             item->_syncedValues = _values; item->_syncedPolygon = polygon;
             item->surveyAreaPolygon()->setPath(surveyAreaPolygon()->coordinateList());
