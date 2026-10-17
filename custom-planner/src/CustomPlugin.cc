@@ -34,6 +34,10 @@ void CustomPlugin::postSaveToMissionJson(PlanMasterController* controller, QJson
 void CustomPlugin::postLoadFromJson(PlanMasterController* controller, QJsonObject& plan)
 {
     _planner.loadSettings(controller, plan);
+    auto* items = controller->missionController()->visualItems();
+    for (int i = 1; i < items->count(); ++i) {
+        if (auto* block = qobject_cast<ChimeraMissionItem*>(items->get(i)); block && block->splitPart()) block->upgradeFrozenSurvey();
+    }
 }
 
 QString CustomPlugin::missionUploadError(PlanMasterController* controller) const
@@ -45,6 +49,8 @@ QString CustomPlugin::missionUploadError(PlanMasterController* controller) const
         auto* visual = qobject_cast<VisualMissionItem*>(items->get(i));
         if (auto* block = qobject_cast<ChimeraMissionItem*>(visual)) {
             if (!block->error().isEmpty()) return block->error();
+            const auto groupError = block->linkedSurveyError();
+            if (!groupError.isEmpty()) return groupError;
             if (block->kind() == "fiducial" && regionStarted)
                 return tr("Move fiducial blocks before the first mission arm or vantage marker.");
         }

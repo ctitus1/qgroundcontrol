@@ -8,6 +8,9 @@
 #include <QJsonArray>
 #include <QJsonObject>
 #include <QScopedValueRollback>
+#include <QUuid>
+#include "Fact.h"
+#include "FactMetaData.h"
 
 namespace {
 QVariantMap point(const QGeoCoordinate& c, bool roi, double yaw)
@@ -19,6 +22,75 @@ QGeoCoordinate coordinateOf(const QVariantMap& p)
 {
     return {p.value("latitude").toDouble(), p.value("longitude").toDouble(), p.value("altitude").toDouble()};
 }
+QList<QGeoCoordinate> routePoints(const QJsonArray& commands)
+{
+    QList<QGeoCoordinate> points;
+    for (const auto& value : commands) {
+        const auto item = value.toObject();
+        if (item["command"].toInt() != MAV_CMD_NAV_WAYPOINT) continue;
+        const auto p = item["params"].toArray();
+        points.append(QGeoCoordinate(p[4].toDouble(), p[5].toDouble(), p[6].toDouble()));
+    }
+    return points;
+}
+double routeLength(const QList<QGeoCoordinate>& path)
+{
+    double length = 0;
+    for (int i = 1; i < path.size(); ++i) length += path[i-1].distanceTo(path[i]);
+    return length;
+}
+double routeFraction(const QList<QGeoCoordinate>& path, const QGeoCoordinate& coordinate, double* nearestDistance = nullptr)
+{
+    const double total = routeLength(path);
+    if (total <= 0 || !coordinate.isValid()) return -1;
+    double travelled = 0, nearest = INFINITY, fraction = 0;
+    for (int i = 1; i < path.size(); ++i) {
+        const auto from = path[i-1], to = path[i];
+        const double length = from.distanceTo(to);
+        if (length < 0.001) continue;
+        const double bearing = (from.azimuthTo(coordinate) - from.azimuthTo(to)) * M_PI / 180;
+        const double offset = qBound(0., from.distanceTo(coordinate) * std::cos(bearing), length);
+        const auto projected = from.atDistanceAndAzimuth(offset, from.azimuthTo(to));
+        const double distance = projected.distanceTo(coordinate);
+        if (distance < nearest) { nearest = distance; fraction = (travelled + offset) / total; }
+        travelled += length;
+    }
+    if (nearestDistance) *nearestDistance = nearest;
+    return fraction;
+}
+QPair<QJsonArray, QJsonArray> cutRoute(const QJsonArray& commands, double fraction)
+{
+    const auto points = routePoints(commands);
+    const double target = fraction * routeLength(points);
+    double travelled = 0, trigger = 0;
+    int waypoint = -1, cut = -1;
+    QGeoCoordinate endpoint;
+    for (int i = 0; i < commands.size(); ++i) {
+        const auto item = commands[i].toObject();
+        if (item["command"].toInt() == MAV_CMD_DO_SET_CAM_TRIGG_DIST) trigger = item["params"].toArray()[0].toDouble();
+        if (item["command"].toInt() != MAV_CMD_NAV_WAYPOINT) continue;
+        ++waypoint;
+        if (waypoint + 1 >= points.size()) break;
+        const double length = points[waypoint].distanceTo(points[waypoint+1]);
+        if (length > 0 && travelled + length >= target) {
+            endpoint = points[waypoint].atDistanceAndAzimuth(qBound(0., target-travelled, length), points[waypoint].azimuthTo(points[waypoint+1]));
+            cut = i; break;
+        }
+        travelled += length;
+    }
+    if (cut < 0) return {};
+    auto endCommand = commands[cut].toObject(); auto params = endCommand["params"].toArray();
+    params[4] = endpoint.latitude(); params[5] = endpoint.longitude(); endCommand["params"] = params;
+    MissionItem triggerItem(0, MAV_CMD_DO_SET_CAM_TRIGG_DIST, MAV_FRAME_MISSION, 0,0,0,0,0,0,0,true,false);
+    QJsonObject stop, restart; triggerItem.save(stop); triggerItem.setParam1(trigger); triggerItem.save(restart);
+    QJsonArray first, second;
+    for (int i = 0; i <= cut; ++i) first.append(commands[i]);
+    first.append(endCommand); first.append(stop);
+    second.append(endCommand); second.append(restart);
+    for (int i = cut + 1; i < commands.size(); ++i) second.append(commands[i]);
+    return {first, second};
+}
+
 }
 
 ChimeraMissionItem::ChimeraMissionItem(PlanMasterController* master, bool flyView,
@@ -35,15 +107,34 @@ ChimeraMissionItem::ChimeraMissionItem(PlanMasterController* master, bool flyVie
     _values["delay"] = 60.;
     _values["angle"] = 0.;
     _values["pitch"] = kind == "fiducial" ? -90. : -45.;
+    auto keys = _values.keys(); keys.append("latitude"); keys.append("longitude");
+    for (const auto& key : keys) {
+        if (key == "enabled") continue;
+        auto* field = new Fact(0, key, FactMetaData::valueTypeDouble, this);
+        auto* metadata = field->metaData();
+        metadata->setDecimalPlaces(key == "latitude" || key == "longitude" ? 7 : 1);
+        if (key == "altitude") { metadata->setRawUnits("m"); metadata->setRawMin(0.1); }
+        if (key == "speed") { metadata->setRawUnits("m/s"); metadata->setRawMin(0.1); }
+        if (key == "delay") { metadata->setRawUnits("s"); metadata->setRawMin(1.01); }
+        if (key == "yaw" || key == "angle") { metadata->setRawUnits("deg"); metadata->setRawMin(0); metadata->setRawMax(359.99); }
+        if (key == "pitch") { metadata->setRawUnits("deg"); metadata->setRawMin(-90); metadata->setRawMax(-0.01); }
+        if (key == "overlap") { metadata->setRawUnits("%"); metadata->setRawMin(0); metadata->setRawMax(94.99); }
+        if (key == "latitude") { metadata->setRawMin(-90); metadata->setRawMax(90); }
+        if (key == "longitude") { metadata->setRawMin(-180); metadata->setRawMax(180); }
+        if (QStringList{"width", "height", "fx", "fy", "cx", "cy"}.contains(key)) { metadata->setRawUnits("px"); metadata->setRawMin(key == "cx" || key == "cy" ? 0 : 0.1); }
+        field->setRawValue(_values.value(key, 0));
+        _facts.insert(key, field);
+        connect(field, &Fact::rawValueChanged, this, [this, key](const QVariant& value) { if (!_updating) setValue(key, value.toDouble()); });
+    }
     _survey->cameraCalc()->setDistanceMode(QGroundControlQmlGlobal::AltitudeModeRelative);
     _survey->turnAroundDistance()->setRawValue(0);
     _survey->setWizardMode(false);
-    connect(surveyAreaPolygon(), &QGCMapPolygon::pathChanged, this, &ChimeraMissionItem::rebuild);
+    connect(surveyAreaPolygon(), &QGCMapPolygon::pathChanged, this, [this] { rebuild(); syncSurvey(); });
     connect(surveyAreaPolygon(), &QGCMapPolygon::centerDragChanged, this, [this](bool dragging) {
         if (!dragging && !_updating) {
             moveInspectionPoints(_lastCenter, centerCoordinate());
             _lastCenter = centerCoordinate();
-            rebuild();
+            rebuild(); syncSurvey();
         }
     });
     connect(this, &VisualMissionItem::wizardModeChanged, this, [this](bool value) { if (value) setWizardMode(false); });
@@ -125,7 +216,7 @@ void ChimeraMissionItem::setCoordinate(const QGeoCoordinate& c)
                 c.atDistanceAndAzimuth(70.71,135),c.atDistanceAndAzimuth(70.71,45),c.atDistanceAndAzimuth(70.71,315)});
         }
     }
-    rebuild();
+    rebuild(); syncSurvey();
 }
 void ChimeraMissionItem::setValue(const QString& key, double value)
 {
@@ -139,7 +230,7 @@ void ChimeraMissionItem::setValue(const QString& key, double value)
     if (splitPart() && key != "speed") return;
     if (!_values.contains(key) || _values[key] == value) return;
     _values[key] = value;
-    rebuild();
+    rebuild(); syncSurvey();
 }
 void ChimeraMissionItem::addInspection(int checkpoint)
 {
@@ -240,6 +331,20 @@ void ChimeraMissionItem::rebuild()
         _generated = {};
         if (built) {
             for (auto* item : generated) { QJsonObject json; item->save(json); _generated.append(json); }
+            if (linkedSurvey()) {
+                auto section = _end < 1 ? cutRoute(_generated, _end).first : _generated;
+                if (_start > 0) section = cutRoute(section, _start / _end).second;
+                generated.clear(); path.clear();
+                for (const auto& value : section) {
+                    auto* item = new MissionItem(&owner);
+                    if (!item->load(value.toObject(), 0, _error)) break;
+                    generated.append(item);
+                    if (item->command() == MAV_CMD_NAV_WAYPOINT) path.append(QVariant::fromValue(QGeoCoordinate(item->param5(), item->param6(), item->param7())));
+                }
+                _preview["path"] = path;
+                if (path.size() < 2) _error = tr("The survey section has no flight path.");
+                _resume = _start > 0;
+            }
             for (const auto& value : _inspections) {
                 const auto b = value.toMap();
                 if (b["checkpoint"].toInt() < 0 || b["checkpoint"].toInt() >= path.size())
@@ -316,7 +421,11 @@ void ChimeraMissionItem::rebuild()
     emit ComplexMissionItem::boundingCubeChanged();
     _isIncomplete = !_error.isEmpty();
     setDirty(true);
-    emit changed(); emit splitPositionChanged(); emit isIncompleteChanged(); emit readyForSaveStateChanged();
+    for (auto it = _facts.begin(); it != _facts.end(); ++it) {
+        const double value = it.key() == "latitude" ? centerCoordinate().latitude() : it.key() == "longitude" ? centerCoordinate().longitude() : _values[it.key()].toDouble();
+        if (std::isfinite(value)) it.value()->setRawValue(value);
+    }
+    emit changed(); emit isIncompleteChanged(); emit readyForSaveStateChanged();
     emit coordinateChanged(coordinate()); emit exitCoordinateChanged(exitCoordinate());
     emit amslEntryAltChanged(amslEntryAlt()); emit amslExitAltChanged(amslExitAlt());
     emit minAMSLAltitudeChanged(); emit maxAMSLAltitudeChanged(); emit complexDistanceChanged();
@@ -335,14 +444,14 @@ void ChimeraMissionItem::save(QJsonArray& items)
 {
     QJsonArray polygon;
     for (const auto& c : surveyAreaPolygon()->coordinateList()) polygon.append(QJsonArray{c.latitude(), c.longitude()});
-    items.append(QJsonObject{{"type", "ComplexItem"}, {"complexItemType", "chimera-" + _kind}, {"version", splitPart() ? 2 : 1},
+    items.append(QJsonObject{{"type", "ComplexItem"}, {"complexItemType", "chimera-" + _kind}, {"version", linkedSurvey() ? 3 : splitPart() ? 2 : 1},
         {"values", QJsonObject::fromVariantMap(_values)}, {"position", QJsonArray{_position.latitude(), _position.longitude()}},
-        {"polygon", polygon}, {"frozenRoute", _frozen}, {"resume", _resume}, {"inspections", QJsonArray::fromVariantList(_inspections)}});
+        {"polygon", polygon}, {"surveyGroup", _groupId}, {"rangeStart", _start}, {"rangeEnd", _end}, {"frozenRoute", _frozen}, {"resume", _resume}, {"inspections", QJsonArray::fromVariantList(_inspections)}});
 }
 bool ChimeraMissionItem::load(const QJsonObject& json, int sequence, QString& error)
 {
     const int version = json["version"].toInt();
-    if ((version != 1 && version != 2) || (version == 2 && json["frozenRoute"].toArray().isEmpty()) || !json["values"].isObject() || !json["inspections"].isArray()) {
+    if ((version != 1 && version != 2 && version != 3) || (version == 2 && json["frozenRoute"].toArray().isEmpty()) || !json["values"].isObject() || !json["inspections"].isArray()) {
         error = tr("Invalid Chimera block format or version."); return false;
     }
     {
@@ -360,8 +469,14 @@ bool ChimeraMissionItem::load(const QJsonObject& json, int sequence, QString& er
         for (const auto& p : json["polygon"].toArray()) { const auto a = p.toArray(); polygon.append(QGeoCoordinate(a[0].toDouble(), a[1].toDouble())); }
         surveyAreaPolygon()->setPath(polygon);
         _inspections = json["inspections"].toArray().toVariantList();
+        _groupId = json["surveyGroup"].toString();
+        _start = json["rangeStart"].toDouble(0); _end = json["rangeEnd"].toDouble(1);
+        if (version == 3 && (_groupId.isEmpty() || !std::isfinite(_start) || !std::isfinite(_end) || _start < 0 || _end > 1 || _start >= _end)) {
+            error = tr("Invalid linked survey range."); return false;
+        }
         _frozen = json["frozenRoute"].toArray();
         _resume = json["resume"].toBool();
+        _syncedValues = _values; _syncedPolygon = surveyAreaPolygon()->coordinateList();
         _sequence = sequence;
     }
     rebuild();
@@ -369,65 +484,156 @@ bool ChimeraMissionItem::load(const QJsonObject& json, int sequence, QString& er
     return error.isEmpty();
 }
 
-void ChimeraMissionItem::setSplitPosition(double position)
+QList<ChimeraMissionItem*> ChimeraMissionItem::linkedParts() const
 {
-    if (!std::isfinite(position) || _splitPosition == position) return;
-    _splitPosition = position;
-    emit splitPositionChanged();
+    QList<ChimeraMissionItem*> parts;
+    if (_groupId.isEmpty()) return parts;
+    auto* model = _masterController->missionController()->visualItems();
+    for (int i = 1; i < model->count(); ++i) {
+        auto* item = qobject_cast<ChimeraMissionItem*>(model->get(i));
+        if (item && item->_groupId == _groupId) parts.append(item);
+    }
+    return parts;
 }
 
-QGeoCoordinate ChimeraMissionItem::splitCoordinate() const
+void ChimeraMissionItem::syncSurvey()
+{
+    if (_updating || !linkedSurvey()) return;
+    const auto polygon = surveyAreaPolygon()->coordinateList();
+    if (_syncedValues == _values && _syncedPolygon == polygon) return;
+    _syncedValues = _values; _syncedPolygon = polygon;
+    for (auto* item : linkedParts()) {
+        if (item == this || (item->_values == _values && item->surveyAreaPolygon()->coordinateList() == surveyAreaPolygon()->coordinateList() && item->_position == _position)) continue;
+        {
+            QScopedValueRollback<bool> guard(item->_updating, true);
+            item->_values = _values;
+            item->_syncedValues = _values; item->_syncedPolygon = polygon;
+            item->surveyAreaPolygon()->setPath(surveyAreaPolygon()->coordinateList());
+            item->_position = _position;
+        }
+        item->rebuild();
+    }
+}
+
+ChimeraMissionItem* ChimeraMissionItem::nextPart() const
+{
+    for (auto* item : linkedParts()) if (item != this && qAbs(item->_start - _end) < 1e-8) return item;
+    return nullptr;
+}
+
+QString ChimeraMissionItem::linkedSurveyError() const
+{
+    if (!linkedSurvey()) return {};
+    double end = 0;
+    for (auto* item : linkedParts()) {
+        if (qAbs(item->_start - end) > 1e-8 || item->_values != _values || item->surveyAreaPolygon()->coordinateList() != surveyAreaPolygon()->coordinateList())
+            return tr("The linked survey has missing, reordered, or inconsistent parts. Restore the parts or remove the whole survey.");
+        end = item->_end;
+    }
+    return qAbs(end - 1) < 1e-8 ? QString() : tr("The linked survey is missing its final part.");
+}
+
+QVariantList ChimeraMissionItem::splitHandles() const
+{
+    QVariantList handles;
+    const auto path = _preview.value("path").toList();
+    if (splitPart() || !_inspections.isEmpty()) return handles;
+    for (int i = 1; i < path.size(); ++i) {
+        const auto a = path[i-1].value<QGeoCoordinate>(), b = path[i].value<QGeoCoordinate>();
+        if (a.distanceTo(b) > 1) handles.append(QVariant::fromValue(a.atDistanceAndAzimuth(a.distanceTo(b)/2, a.azimuthTo(b))));
+    }
+    return handles;
+}
+
+QString ChimeraMissionItem::addSplitPoint(const QGeoCoordinate& coordinate)
 {
     const auto path = _preview.value("path").toList();
-    if (path.size() < 2 || _splitPosition < 0 || _splitPosition >= path.size() - 1) return {};
-    const int index = int(_splitPosition);
-    const auto from = path[index].value<QGeoCoordinate>(), to = path[index + 1].value<QGeoCoordinate>();
-    auto point = from.atDistanceAndAzimuth(from.distanceTo(to) * (_splitPosition - index), from.azimuthTo(to));
-    point.setAltitude(from.altitude());
-    return point;
+    QList<QGeoCoordinate> points;
+    for (const auto& value : path) points.append(value.value<QGeoCoordinate>());
+    const double fraction = routeFraction(points, coordinate);
+    if (fraction <= 0 || fraction >= 1) return tr("Choose a point inside the survey path.");
+    return splitAt(_start + fraction * (_end - _start));
 }
 
-QString ChimeraMissionItem::splitSurvey()
+QString ChimeraMissionItem::splitAt(double fraction)
 {
-    const auto checkpoint = splitCoordinate();
-    if (!isSurveyItem() || !_error.isEmpty() || !checkpoint.isValid() || _splitPosition <= 0)
-        return tr("Choose a split point between the start and end of the survey.");
-    if (!_inspections.isEmpty()) return tr("Remove the embedded inspections before splitting this survey.");
+    if (!isSurveyItem() || splitPart() || !_error.isEmpty() || !_inspections.isEmpty())
+        return tr("Use an editable survey without embedded inspections to add split points.");
+    if (fraction - _start < 1e-6 || _end - fraction < 1e-6) return tr("The split point is too close to an existing split.");
     auto* controller = _masterController->missionController();
     int index = -1;
     for (int i = 1; i < controller->visualItems()->count(); ++i) if (controller->visualItems()->get(i) == this) index = i;
     if (index < 0) return tr("The survey is not in this mission.");
-    int waypoint = -1, cut = -1;
-    double trigger = 0;
-    for (int i = 0; i < _generated.size(); ++i) {
-        const auto item = _generated[i].toObject();
-        if (item["command"].toInt() == MAV_CMD_DO_SET_CAM_TRIGG_DIST) trigger = item["params"].toArray()[0].toDouble();
-        if (item["command"].toInt() == MAV_CMD_NAV_WAYPOINT && ++waypoint == int(_splitPosition)) { cut = i; break; }
-    }
-    if (cut < 0) return tr("The split point is not on this survey.");
-    auto endpoint = _generated[cut].toObject();
-    auto params = endpoint["params"].toArray();
-    params[4] = checkpoint.latitude(); params[5] = checkpoint.longitude(); endpoint["params"] = params;
-    MissionItem triggerItem(0, MAV_CMD_DO_SET_CAM_TRIGG_DIST, MAV_FRAME_MISSION, 0,0,0,0,0,0,0,true,false);
-    QJsonObject stop; triggerItem.save(stop);
-    triggerItem.setParam1(trigger);
-    QJsonObject restart; triggerItem.save(restart);
-    QJsonArray first, second;
-    for (int i = 0; i <= cut; ++i) first.append(_generated[i]);
-    if (_splitPosition != int(_splitPosition)) first.append(endpoint);
-    first.append(stop);
-    second.append(endpoint); second.append(restart);
-    for (int i = cut + 1; i < _generated.size(); ++i) second.append(_generated[i]);
+    const auto group = _groupId.isEmpty() ? QUuid::createUuid().toString(QUuid::WithoutBraces) : _groupId;
     QJsonArray saved; save(saved);
-    auto json = saved.first().toObject(); json["frozenRoute"] = second; json["resume"] = true; json["version"] = 2;
+    auto json = saved.first().toObject();
+    json["version"] = 3; json["surveyGroup"] = group; json["rangeStart"] = fraction; json["rangeEnd"] = _end;
     auto* continuation = qobject_cast<ChimeraMissionItem*>(controller->insertComplexMissionItem("Chimera survey", centerCoordinate(), index + 1));
     if (!continuation) return tr("Could not create the survey continuation.");
     QString error;
-    if (!continuation->load(json, continuation->sequenceNumber(), error)) {
-        controller->removeVisualItem(index + 1); return error;
-    }
-    _frozen = first;
+    if (!continuation->load(json, continuation->sequenceNumber(), error)) { controller->removeVisualItem(index + 1); return error; }
+    _groupId = group; _end = fraction;
+    _syncedValues = _values; _syncedPolygon = surveyAreaPolygon()->coordinateList();
     rebuild();
     controller->setCurrentPlanViewSeqNum(sequenceNumber(), true);
+    return {};
+}
+
+void ChimeraMissionItem::moveEndSplit(const QGeoCoordinate& coordinate)
+{
+    auto* next = nextPart();
+    if (!next) return;
+    const double fraction = routeFraction(routePoints(_generated), coordinate);
+    if (fraction <= _start + 1e-6 || fraction >= next->_end - 1e-6) return;
+    _end = fraction; next->_start = fraction;
+    rebuild(); next->rebuild();
+}
+
+QString ChimeraMissionItem::removeEndSplit()
+{
+    auto* next = nextPart();
+    if (!next) return tr("No following survey part was found.");
+    auto* controller = _masterController->missionController();
+    int index = -1;
+    for (int i = 1; i + 1 < controller->visualItems()->count(); ++i)
+        if (controller->visualItems()->get(i) == this && controller->visualItems()->get(i+1) == next) index = i;
+    if (index < 0) return tr("Move or remove the manual mission items between these parts before removing this split.");
+    _end = next->_end;
+    controller->removeVisualItem(index + 1);
+    if (_start == 0 && _end == 1) _groupId.clear();
+    rebuild();
+    controller->setCurrentPlanViewSeqNum(sequenceNumber(), true);
+    return {};
+}
+
+QString ChimeraMissionItem::upgradeFrozenSurvey()
+{
+    if (!splitPart()) return {};
+    QObject owner; QList<MissionItem*> commands; QVariantList path; QString error;
+    if (!_planner->buildSurvey(_survey, commands, &owner, path, error)) return error;
+    QList<QGeoCoordinate> full;
+    for (const auto& value : path) full.append(value.value<QGeoCoordinate>());
+    QList<ChimeraMissionItem*> parts;
+    QList<QPair<double, double>> ranges;
+    auto* model = _masterController->missionController()->visualItems();
+    double end = 0;
+    for (int i = 1; i < model->count(); ++i) {
+        auto* item = qobject_cast<ChimeraMissionItem*>(model->get(i));
+        if (!item || !item->splitPart() || item->_values != _values || item->surveyAreaPolygon()->coordinateList() != surveyAreaPolygon()->coordinateList()) continue;
+        const auto points = routePoints(item->_frozen);
+        if (points.size() < 2) continue;
+        double startDistance = INFINITY, endDistance = INFINITY;
+        const double start = routeFraction(full, points.first(), &startDistance), finish = routeFraction(full, points.last(), &endDistance);
+        if (startDistance > 1 || endDistance > 1) return tr("The legacy route differs from its source. Open the original unsplit plan.");
+        if (qAbs(start - end) > 1e-6 || finish <= start) return tr("These legacy parts cannot be linked automatically. Open the original unsplit plan.");
+        parts.append(item); ranges.append({start, finish}); end = finish;
+    }
+    if (parts.isEmpty() || qAbs(end - 1) > 1e-6) return tr("All original survey parts are needed to restore the editable source.");
+    const auto group = QUuid::createUuid().toString(QUuid::WithoutBraces);
+    for (int i = 0; i < parts.size(); ++i) {
+        auto* item = parts[i]; item->_groupId = group; item->_start = ranges[i].first; item->_end = ranges[i].second;
+        item->_syncedValues = item->_values; item->_syncedPolygon = item->surveyAreaPolygon()->coordinateList();
+        item->_frozen = {}; item->rebuild();
+    }
     return {};
 }

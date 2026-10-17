@@ -7,14 +7,17 @@
 class ChimeraPlanner;
 class SurveyComplexItem;
 class QGCMapPolygon;
+class Fact;
 
 class ChimeraMissionItem : public ComplexMissionItem
 {
     Q_OBJECT
     Q_MOC_INCLUDE("QGCMapPolygon.h")
+    Q_MOC_INCLUDE("Fact.h")
+    Q_PROPERTY(bool hasEndSplit READ hasEndSplit NOTIFY changed)
+    Q_PROPERTY(bool linkedSurvey READ linkedSurvey NOTIFY changed)
+    Q_PROPERTY(QVariantList splitHandles READ splitHandles NOTIFY changed)
     Q_PROPERTY(bool splitPart READ splitPart NOTIFY changed)
-    Q_PROPERTY(double splitPosition READ splitPosition WRITE setSplitPosition NOTIFY splitPositionChanged)
-    Q_PROPERTY(QGeoCoordinate splitCoordinate READ splitCoordinate NOTIFY splitPositionChanged)
     Q_PROPERTY(QString kind READ kind CONSTANT)
     Q_PROPERTY(QVariantMap values READ values NOTIFY changed)
     Q_PROPERTY(QVariantList route READ route NOTIFY changed)
@@ -25,11 +28,16 @@ class ChimeraMissionItem : public ComplexMissionItem
     Q_PROPERTY(QGeoCoordinate centerCoordinate READ centerCoordinate WRITE setCoordinate NOTIFY changed)
 public:
     ChimeraMissionItem(PlanMasterController* master, bool flyView, const QString& kind, ChimeraPlanner* planner);
+    Q_INVOKABLE Fact* fact(const QString& key) const { return _facts.value(key); }
+    bool hasEndSplit() const { return !_groupId.isEmpty() && _end < 1; }
+    bool linkedSurvey() const { return !_groupId.isEmpty(); }
+    QVariantList splitHandles() const;
+    Q_INVOKABLE QString addSplitPoint(const QGeoCoordinate& coordinate);
+    Q_INVOKABLE void moveEndSplit(const QGeoCoordinate& coordinate);
+    Q_INVOKABLE QString removeEndSplit();
+    Q_INVOKABLE QString upgradeFrozenSurvey();
+    QString linkedSurveyError() const;
     bool splitPart() const { return !_frozen.isEmpty(); }
-    double splitPosition() const { return _splitPosition; }
-    void setSplitPosition(double position);
-    QGeoCoordinate splitCoordinate() const;
-    Q_INVOKABLE QString splitSurvey();
     Q_INVOKABLE void clearInspections() { _inspections.clear(); rebuild(); }
     QString kind() const { return _kind; }
     QVariantMap values() const { return _values; }
@@ -82,9 +90,12 @@ public:
     double additionalTimeDelay() const override { return _kind == "survey" ? 0 : _values.value("delay").toDouble(); }
 signals:
     void changed();
-    void splitPositionChanged();
 private:
     void rebuild();
+    void syncSurvey();
+    QString splitAt(double fraction);
+    QList<ChimeraMissionItem*> linkedParts() const;
+    ChimeraMissionItem* nextPart() const;
     void moveInspectionPoints(const QGeoCoordinate& from, const QGeoCoordinate& to);
     double homeAltitude() const;
     QString _kind;
@@ -95,10 +106,14 @@ private:
     QVariantList _route;
     QVariantList _inspections;
     QList<MissionItem*> _commands;
+    QMap<QString, Fact*> _facts;
+    QString _groupId;
+    QVariantMap _syncedValues;
+    QList<QGeoCoordinate> _syncedPolygon;
+    double _start = 0, _end = 1;
     QJsonArray _frozen;
     QJsonArray _generated;
     bool _resume = false;
-    double _splitPosition = 1;
     QString _error;
     QGeoCoordinate _position;
     QGeoCoordinate _lastCenter;
