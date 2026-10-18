@@ -58,6 +58,7 @@ QVariantMap ChimeraPlanner::settings(QObject* item) const
         {"cx", 960.0}, {"cy", 540.0}};
     if (item) {
         const auto saved = item->property(settingsKey).toMap();
+        if (saved.contains("entryPoint")) values["entryPoint"] = saved["entryPoint"];
         for (auto it = saved.begin(); it != saved.end(); ++it) {
             if (values.contains(it.key())) values[it.key()] = it.value();
         }
@@ -112,6 +113,8 @@ bool ChimeraPlanner::buildSurvey(SurveyComplexItem* source, QList<MissionItem*>&
         QJsonArray saved;
         source->save(saved);
         auto json = saved.first().toObject();
+        if (source->property(settingsKey).toMap().contains("entryPoint"))
+            json["entryLocation"] = source->property("chimeraCenterOut").toBool() ? 0 : settings(source).value("entryPoint", 0).toInt();
         auto transect = json["TransectStyleComplexItem"].toObject();
         auto calc = transect["CameraCalc"].toObject();
         calc["CameraName"] = CameraCalc::canonicalManualCameraName();
@@ -136,8 +139,9 @@ bool ChimeraPlanner::buildSurvey(SurveyComplexItem* source, QList<MissionItem*>&
     if (source->property("chimeraCenterOut").toBool()) {
         auto* grid = dynamic_cast<PlannerSurvey*>(&generated);
         if (!grid) { error = tr("Center-first survey grid is unavailable."); return false; }
-        const auto center = generated.surveyAreaPolygon()->center();
-        const auto passes = CenterOut::passes(grid->legs(), center, source->gridAngle()->rawValue().toDouble());
+        const auto searchCenter=source->property("chimeraSearchCenter").value<QGeoCoordinate>();
+        const auto center = searchCenter.isValid() ? translate(searchCenter,-shape.center) : generated.surveyAreaPolygon()->center();
+        const auto passes = CenterOut::passes(grid->legs(), center, source->gridAngle()->rawValue().toDouble(), settings(source).value("entryPoint", 0).toInt() % 2);
         if (passes.size() > 2000) { error = tr("Center-first survey exceeds 2000 tracks. Increase spacing or reduce the area."); return false; }
         auto waypoint = [&](const QGeoCoordinate& c) {
             items.append(new MissionItem(0, MAV_CMD_NAV_WAYPOINT, MAV_FRAME_GLOBAL_RELATIVE_ALT, 0,0,0,0,

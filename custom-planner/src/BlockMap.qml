@@ -117,7 +117,8 @@ Item {
                 anchorPoint.y: sourceItem.anchorPointY
                 z: QGroundControl.zOrderMapItems + 4
                 sourceItem: MissionItemIndexLabel {
-                    label: qsTr("Split"); index: -1; checked: true
+                    width: 32; height: 32
+                    label: "S"; index: 0; checked: true
                     onClicked: if (root.interactive) splitMenu.popup()
                 }
                 Component.onDestruction: root.map.removeMapItem(this)
@@ -129,13 +130,21 @@ Item {
         active: endHandle.item !== null && root.interactive
         sourceComponent: Component {
             MissionItemIndicatorDrag {
-                property bool ready: false
-                Component.onCompleted: ready = true
+                objectName: "chimeraSplitDragger"
+                property var missionBlock: root.block
+                property bool dragging: false
                 mapControl: root.map
                 itemIndicator: endHandle.item
                 itemCoordinate: root.block.exitCoordinate
                 z: QGroundControl.zOrderMapItems + 5
-                onItemCoordinateChanged: if (ready && _preventCoordinateBindingLoop) root.block.moveEndSplit(itemCoordinate)
+                onDragStart: dragging = true
+                onItemCoordinateChanged: if (dragging && itemIndicator) itemIndicator.coordinate = itemCoordinate
+                onDragStop: {
+                    dragging = false
+                    root.block.moveEndSplit(itemCoordinate)
+                    itemCoordinate = Qt.binding(function() { return root.block.exitCoordinate })
+                    if (itemIndicator) itemIndicator.coordinate = Qt.binding(function() { return root.block.exitCoordinate })
+                }
                 onClicked: splitMenu.popup()
             }
         }
@@ -152,7 +161,7 @@ Item {
             anchorPoint.x: sourceItem.width / 2
             anchorPoint.y: sourceItem.height / 2
             z: QGroundControl.zOrderMapItems + 3
-            sourceItem: SplitIndicator { onClicked: root.report(root.block.addSplitPoint(handle.coordinate)) }
+            sourceItem: SplitIndicator { objectName: "chimeraSplitButton"; property var missionBlock: root.block; onClicked: root.report(root.block.addSplitPoint(handle.coordinate)) }
         }
     }
     QGCMapPolygonVisuals {

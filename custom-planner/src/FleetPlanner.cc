@@ -1,4 +1,5 @@
 #include "FleetPlanner.h"
+#include "QGCApplication.h"
 #include "ChimeraMissionItem.h"
 #include "QGCMapPolygon.h"
 #include "QmlObjectListModel.h"
@@ -99,8 +100,12 @@ FleetPlanner::FleetPlanner(QObject* parent) : QObject(parent)
 void FleetPlanner::notify()
 {
     if (_publishedProfiles!=_profiles) { _publishedProfiles=_profiles; emit profilesChanged(); }
-    if (_publishedController!=activeController() || _publishedSelection!=_selected || _publishedEnabled!=enabled()) {
-        _publishedController=activeController(); _publishedSelection=_selected; _publishedEnabled=enabled();
+    if (_publishedController!=activeController()) {
+        _publishedController=activeController();
+        emit activeControllerChanged();
+    }
+    if (_publishedSelection!=_selected || _publishedEnabled!=enabled()) {
+        _publishedSelection=_selected; _publishedEnabled=enabled();
         emit controllersChanged();
     }
     emit changed();
@@ -178,6 +183,16 @@ QList<QList<QGeoCoordinate>> FleetPlanner::regions(QString& error, int count) co
     _cachedInput=input; _cachedRegions=result;
     return result;
 }
+void FleetPlanner::requestCreate(QObject* source,int count,double minimum,double maximum,double maximumGap)
+{
+    QPointer<QObject> guardedSource(source);
+    // Fleet creation can unload the QML editor that requested it.
+    QTimer::singleShot(0,this,[this,guardedSource,count,minimum,maximum,maximumGap] {
+        if (!guardedSource) return;
+        const auto error=create(guardedSource.data(),count,minimum,maximum,maximumGap);
+        if (!error.isEmpty()) qgcApp()->showAppMessage(error);
+    });
+}
 QString FleetPlanner::create(QObject* object,int count,double minimum,double maximum,double maximumGap)
 {
     auto* source=qobject_cast<ChimeraMissionItem*>(object);
@@ -197,6 +212,7 @@ QString FleetPlanner::create(QObject* object,int count,double minimum,double max
     QString error; const auto polygons=regions(error);
     if (!error.isEmpty()) { _profiles.clear(); return error; }
     QScopedValueRollback<bool> guard(_updating,true);
+    const auto searchCenter=partitionInput(count).center;
     for (int i=0;i<count;++i) {
         auto* child=makeChild(); auto* mission=child->missionController();
         auto* takeoff=mission->insertTakeoffItem(home,1);
@@ -208,7 +224,7 @@ QString FleetPlanner::create(QObject* object,int count,double minimum,double max
         for (int phase=0;phase<count;++phase) {
             const int region=(i+phase)%count;
             auto* survey=qobject_cast<ChimeraMissionItem*>(mission->insertComplexMissionItem("Chimera survey",source->centerCoordinate(),3+phase));
-            survey->load(saved.first().toObject(),1,error); survey->setFleetRegion(region);
+            survey->load(saved.first().toObject(),1,error); survey->setSearchCenter(searchCenter); survey->setFleetRegion(region);
             survey->surveyAreaPolygon()->setPath(polygons[region]);
         }
         auto* rtl=qobject_cast<SimpleMissionItem*>(mission->insertSimpleMissionItem(home,3+count));
@@ -397,6 +413,7 @@ void FleetPlanner::synchronize()
     if (!_error.isEmpty()) { notify(); return; }
     const double homeAltitude=_master->missionController()->plannedHomePosition().altitude();
     if (!std::isfinite(homeAltitude)) { _error=tr("Set a finite master launch elevation."); notify(); return; }
+    const auto searchCenter=partitionInput(_children.size()).center;
     for (int i=0;i<_children.size();++i) {
         auto profile=_profiles[i].toMap(); const double altitude=_minimum+i*separation(); profile["altitude"]=altitude; _profiles[i]=profile;
         auto* mission=_children[i]->missionController(); auto* items=mission->visualItems();
@@ -408,6 +425,7 @@ void FleetPlanner::synchronize()
             if (block->fleetRegion()==-2) {
                 block->setCoordinate(fiducial()->coordinate()); block->setValue("delay",fiducial()->values()["delay"].toDouble());
             } else if (block->fleetRegion()>=0 && block->fleetRegion()<polygons.size()) {
+                block->setSearchCenter(searchCenter);
                 if (block->surveyAreaPolygon()->coordinateList()!=polygons[block->fleetRegion()]) block->surveyAreaPolygon()->setPath(polygons[block->fleetRegion()]);
             }
             if (block->fleetRegion()!=-1 || block->kind()=="survey" || block->kind()=="vantage") { block->setValue("altitude",altitude); block->setValue("yaw",profile["heading"].toDouble()); }
@@ -596,6 +614,9 @@ void FleetPlanner::load(PlanMasterController* controller,const QJsonObject& plan
         profile["name"]=QString("UAS%1").arg(profile["uas"].toInt());
         _profiles[i]=profile;
     }
+    const auto searchCenter=partitionInput(_children.size()).center;
+    for (auto* child : _children) for (auto* block : blocks(child))
+        if (block->fleetRegion()>=0) block->setSearchCenter(searchCenter);
     watch(); notify();
 }
 QString FleetPlanner::exportDrone(int drone,const QString& filename)

@@ -29,6 +29,30 @@ void check(bool passed, const QString& message)
 {
     if (!passed) throw std::runtime_error(message.toStdString());
 }
+void checkFleetCreationUi(QQmlApplicationEngine* engine, PlanMasterController* master)
+{
+    auto* fleet=qobject_cast<FleetPlanner*>(engine->rootContext()->contextProperty("chimeraFleet").value<QObject*>());
+    auto* mainWindow=qobject_cast<QQuickWindow*>(engine->rootObjects().first());
+    check(QMetaObject::invokeMethod(mainWindow,"showPlanView"),"Show creation panel");
+    QEventLoop viewEvents;
+    master->loadFromFile("/tmp/qgc-small-ui.plan");
+    auto* smallUiMission=master->missionController();
+    smallUiMission->setCurrentPlanViewSeqNum(qobject_cast<VisualMissionItem*>(smallUiMission->visualItems()->get(3))->sequenceNumber(),true);
+    QTimer::singleShot(300,&viewEvents,&QEventLoop::quit); viewEvents.exec();
+    QObject* createButton=nullptr;
+    QList<QQuickItem*> creationItems{mainWindow->contentItem()};
+    for (int i=0;i<creationItems.size();++i) {
+        auto* item=creationItems[i]; creationItems.append(item->childItems());
+        if (item->objectName()=="fleetMinimum") item->setProperty("text","18");
+        if (item->objectName()=="fleetMaximum") item->setProperty("text","30");
+        if (item->objectName()=="fleetCreate") createButton=item;
+    }
+    qInfo() << "Create small fleet through UI at 18-30 m";
+    check(createButton && QMetaObject::invokeMethod(createButton,"clicked"),"Create fleet through its QML button");
+    QTimer::singleShot(1500,&viewEvents,&QEventLoop::quit); viewEvents.exec();
+    check(fleet->enabled() && fleet->validate().isEmpty(),fleet->validate());
+}
+
 }
 void schedulePlannerSmoke(QQmlApplicationEngine* engine, ChimeraPlanner*)
 {
@@ -44,6 +68,16 @@ void schedulePlannerSmoke(QQmlApplicationEngine* engine, ChimeraPlanner*)
             auto* fiducial = qobject_cast<ChimeraMissionItem*>(mission->insertComplexMissionItem("Chimera fiducial", origin, 2));
             auto* survey = qobject_cast<ChimeraMissionItem*>(mission->insertComplexMissionItem("Chimera survey", origin, 3));
             check(fiducial && survey, "Native block creation");
+            if (qEnvironmentVariableIsSet("QGC_PLANNER_CREATE_ONLY")) {
+                QList<QGeoCoordinate> polygon;
+                for (double bearing : {45.,135.,225.,315.}) polygon.append(origin.atDistanceAndAzimuth(20,bearing));
+                survey->surveyAreaPolygon()->setPath(polygon); survey->setValue("altitude",18);
+                plan.saveToFile("/tmp/qgc-small-ui.plan");
+                auto* fleet=qobject_cast<FleetPlanner*>(engine->rootContext()->contextProperty("chimeraFleet").value<QObject*>());
+                checkFleetCreationUi(engine,fleet->activeController());
+                qInfo() << "PLANNER_CREATE_PASS";
+                QCoreApplication::exit(0); return;
+            }
             check(survey->values()["altitude"].toDouble() == 53 && survey->values()["speed"].toDouble() == 1 &&
                   survey->values()["pitch"].toDouble() == -70 && survey->values()["overlap"].toDouble() == 25, "New survey defaults");
             check(survey->cameraPresets().size() == 9, "Eight aircraft camera presets and Custom");
@@ -132,6 +166,11 @@ void schedulePlannerSmoke(QQmlApplicationEngine* engine, ChimeraPlanner*)
             check(mapWidget, map.errorString()); delete mapWidget; delete mapObject;
             check(QGCCorePlugin::instance()->missionUploadError(&plan).isEmpty(), "Native upload validation");
             survey->clearInspections();
+            const auto entryRoute=survey->route();
+            survey->rotateEntryPoint();
+            check(survey->route()!=entryRoute,"Normal survey entry rotates through QGC locations");
+            for (int turn=0;turn<3;++turn) survey->rotateEntryPoint();
+            check(survey->route()==entryRoute,"Four normal entry rotations restore the route");
             const auto unsplitPath = survey->preview()["path"].toList();
             const auto splitFrom = unsplitPath[1].value<QGeoCoordinate>(), splitTo = unsplitPath[2].value<QGeoCoordinate>();
             const auto splitPoint = splitFrom.atDistanceAndAzimuth(splitFrom.distanceTo(splitTo)/2, splitFrom.azimuthTo(splitTo));
@@ -261,6 +300,24 @@ void schedulePlannerSmoke(QQmlApplicationEngine* engine, ChimeraPlanner*)
             auto* invalidSurvey = qobject_cast<ChimeraMissionItem*>(mission->insertComplexMissionItem("Chimera survey", origin, 8));
             invalidSurvey->setValue("pitch", -5);
             check(invalidSurvey->readyForSaveState() == VisualMissionItem::NotReadyForSaveData, "Invalid geometry blocked");
+            for (double radius : {5.,20.}) {
+                qInfo() << "Small fleet at 18-30 m, radius" << radius;
+                PlanMasterController smallMaster; smallMaster.setFlyView(false); smallMaster.start(true);
+                auto* smallMission=smallMaster.missionController();
+                smallMission->insertTakeoffItem(origin,1);
+                smallMission->insertComplexMissionItem("Chimera fiducial",origin,2);
+                auto* smallSurvey=qobject_cast<ChimeraMissionItem*>(smallMission->insertComplexMissionItem("Chimera survey",origin,3));
+                QList<QGeoCoordinate> smallPolygon;
+                for (double bearing : {45.,135.,225.,315.}) smallPolygon.append(origin.atDistanceAndAzimuth(radius,bearing));
+                smallSurvey->surveyAreaPolygon()->setPath(smallPolygon);
+                smallSurvey->setValue("altitude",18);
+                smallMaster.saveToFile("/tmp/qgc-small-ui.plan");
+                FleetPlanner smallFleet;
+                check(smallFleet.create(smallSurvey,4,18,30,0).isEmpty(),"Create small fleet at 18-30 m");
+                smallFleet.synchronize();
+                check(smallFleet.validate().isEmpty(),smallFleet.validate());
+                for (int count : {2,8,4}) check(smallFleet.setCount(count).isEmpty(),"Resize small low-altitude fleet");
+            }
             PlanMasterController fleetMaster; fleetMaster.setFlyView(false); fleetMaster.start(true);
             auto* fleetMission = fleetMaster.missionController();
             fleetMission->insertTakeoffItem(origin, 1);
@@ -279,6 +336,9 @@ void schedulePlannerSmoke(QQmlApplicationEngine* engine, ChimeraPlanner*)
                     check(region && region->fleetRegion() == (drone + phase) % 3 && region->centerOut(), "Rotated region assignment");
                     check(region->values()["yaw"].toDouble() == 120 * drone && region->values()["altitude"].toDouble() == 30 + 10 * drone, "Independent heading and automatic altitude");
                     check(region->route().size() >= 3, "Center-first route generated");
+                    check(region->searchCenter().distanceTo(fleet.controlPoints().first().value<QGeoCoordinate>())<0.01,"Every region uses the shared partition center");
+                    auto* firstRegion=qobject_cast<ChimeraMissionItem*>(items->get(3));
+                    check(region->coordinate().distanceTo(firstRegion->coordinate())<0.01,"Each drone starts all regions at the same camera-offset shared center");
                 }
             }
             fleet.setNight(true);
@@ -309,7 +369,17 @@ void schedulePlannerSmoke(QQmlApplicationEngine* engine, ChimeraPlanner*)
             fleet.setSelected(1);
             auto* childMission = fleet.activeController()->missionController();
             auto* region = qobject_cast<ChimeraMissionItem*>(childMission->visualItems()->get(3));
+            check(region->searchCenter().distanceTo(partitionCenter)<0.01,"Survey origin follows the shared junction when it moves");
+            const auto originalRoute=region->route();
+            const auto originalYaw=region->values()["yaw"];
+            region->rotateEntryPoint();
+            check(region->route()!=originalRoute && region->values()["yaw"]==originalYaw,"Rotate fleet entry without changing heading");
+            region->rotateEntryPoint();
+            check(region->route()==originalRoute,"Entry rotation returns to original route");
             check(region->addSplitPoint(region->splitHandles().first().value<QGeoCoordinate>()).isEmpty(), "Fleet region supports survey interruptions");
+            region->rotateEntryPoint();
+            auto* rotatedPart=qobject_cast<ChimeraMissionItem*>(childMission->visualItems()->get(4));
+            check(rotatedPart->values()["entryPoint"]==region->values()["entryPoint"] && region->linkedSurveyError().isEmpty(),"Entry rotation applies to the complete linked survey");
             childMission->insertSimpleMissionItem(origin.atDistanceAndAzimuth(10, 90), 4);
             const int countBefore = childMission->visualItems()->count();
             region->setCameraPreset(2);
@@ -345,9 +415,11 @@ void schedulePlannerSmoke(QQmlApplicationEngine* engine, ChimeraPlanner*)
             check(fleet.setCount(3).isEmpty(), "Restore an archived drone after reload");
             fleet.setSelected(3);
             archivedRegion = qobject_cast<ChimeraMissionItem*>(fleet.activeController()->missionController()->visualItems()->get(3));
+            check(archivedRegion->searchCenter().distanceTo(fleet.controlPoints()[0].value<QGeoCoordinate>())<0.01,"Reloaded regions retain the shared junction");
             check(archivedRegion->values()["speed"].toDouble() == 2.5, "Saved archive preserves removed drone settings");
             fleet.setSelected(1);
             check(fleet.activeController()->missionController()->visualItems()->count() == countBefore, "Master preserves manual drone mission items");
+            check(qobject_cast<ChimeraMissionItem*>(fleet.activeController()->missionController()->visualItems()->get(3))->values()["entryPoint"].toInt()==1,"Master reload preserves rotated entry");
             check(fleet.exportDrone(0, "/tmp/qgc-fleet-drone.plan").isEmpty(), "Export a single drone plan");
             fleet.setProfile(0,"startRegion",1);
             fleet.setSelected(1);
@@ -381,10 +453,10 @@ void schedulePlannerSmoke(QQmlApplicationEngine* engine, ChimeraPlanner*)
             check(passes.size()==testLegs.size(),"Center-out keeps complete tracks");
             double length=0, previousOffset=-1, previousDirection=0;
             for (const auto& pass : passes) {
-                check(std::abs(pass.across)>=previousOffset,"Center tracks precede outer tracks");
+                check(pass.distance>=previousOffset,"Tracks advance away from the common center");
                 const double direction=std::cos(pass.start.azimuthTo(pass.end)*M_PI/180);
                 if (previousDirection) check(direction*previousDirection<0,"Successive tracks zigzag in opposite directions");
-                previousDirection=direction; previousOffset=std::abs(pass.across);
+                previousDirection=direction; previousOffset=pass.distance;
                 length+=pass.start.distanceTo(pass.end);
             }
             check(std::abs(length-240)<0.1,"Center-out preserves full survey coverage");
@@ -412,7 +484,25 @@ void schedulePlannerSmoke(QQmlApplicationEngine* engine, ChimeraPlanner*)
             for (int repeat=0; repeat<4; ++repeat) {
                 auto* active = liveFleet->activeController()->missionController();
                 auto* part = qobject_cast<ChimeraMissionItem*>(active->visualItems()->get(3));
-                check(part->addSplitPoint(part->splitHandles().first().value<QGeoCoordinate>()).isEmpty(), "Split with the native editor open");
+                QObject* splitButton=nullptr;
+                for (auto* candidate : mainWindow->findChildren<QObject*>("chimeraSplitButton"))
+                    if (candidate->property("missionBlock").value<QObject*>()==part) { splitButton=candidate; break; }
+                check(splitButton && QMetaObject::invokeMethod(splitButton,"clicked"),"Split through the map control");
+                QTimer::singleShot(150,&viewEvents,&QEventLoop::quit); viewEvents.exec();
+                QObject* splitDragger=nullptr;
+                QList<QQuickItem*> visualChildren{mainWindow->contentItem()};
+                for (int i=0;i<visualChildren.size();++i) {
+                    auto* candidate=visualChildren[i]; visualChildren.append(candidate->childItems());
+                    if (candidate->objectName()=="chimeraSplitDragger" && candidate->property("missionBlock").value<QObject*>()==part) { splitDragger=candidate; break; }
+                }
+                check(splitDragger,QString("Split drag control exists: current=%1 split=%2 controls=%3").arg(part->isCurrentItem()).arg(part->hasEndSplit()).arg(mainWindow->findChildren<QObject*>("chimeraSplitDragger").size()));
+                const auto previousExit=part->exitCoordinate();
+                const auto dragTarget=part->splitHandles().first().value<QGeoCoordinate>();
+                check(QMetaObject::invokeMethod(splitDragger,"dragStart"),"Start split drag");
+                splitDragger->setProperty("itemCoordinate",QVariant::fromValue(dragTarget));
+                check(part->exitCoordinate()==previousExit,"Dragging does not rebuild the survey");
+                check(QMetaObject::invokeMethod(splitDragger,"dragStop"),"Commit split drag");
+                check(part->exitCoordinate().distanceTo(dragTarget)<0.05,"Split drag commits its new endpoint");
                 QTimer::singleShot(150,&viewEvents,&QEventLoop::quit); viewEvents.exec();
                 check(part->removeEndSplit().isEmpty(), "Remove split with the native editor open");
                 liveFleet->setLayers(30 + repeat, 60 + repeat, 10);
@@ -429,8 +519,13 @@ void schedulePlannerSmoke(QQmlApplicationEngine* engine, ChimeraPlanner*)
             QTimer::singleShot(150,&viewEvents,&QEventLoop::quit); viewEvents.exec();
             mainWindow->grabWindow().save("/tmp/qgc-fleet-settings.png");
             check(QMetaObject::invokeMethod(fleetSettings,"close"),"Close fleet settings");
+            qInfo() << "Native low-altitude fleet";
+            liveFleet->setLayers(18,30,0);
+            QTimer::singleShot(1500,&viewEvents,&QEventLoop::quit); viewEvents.exec();
+            check(liveFleet->validate().isEmpty(),liveFleet->validate());
             liveMaster->saveToFile("/tmp/qgc-fleet-native-save.plan");
             check(liveFleet->activeController()!=liveMaster,"Native editor switches to the selected drone");
+            checkFleetCreationUi(engine,liveMaster);
             qInfo() << "PLANNER_SMOKE_PASS: blocks, no-gimbal markers, linked split edit/remove/resume, persistence, Fact panels, map handles";
             QCoreApplication::exit(0);
         } catch (const std::exception& error) {

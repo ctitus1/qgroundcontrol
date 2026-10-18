@@ -6,13 +6,12 @@
 #include <cmath>
 
 namespace CenterOut {
-struct Pass { QGeoCoordinate start, end; double across; };
+struct Pass { QGeoCoordinate start, end; double distance; };
 inline QList<Pass> passes(const QList<QPair<QGeoCoordinate, QGeoCoordinate>>& legs,
-                         const QGeoCoordinate& center, double heading)
+                         const QGeoCoordinate& center, double heading, bool reverseEntry = false)
 {
     QList<Pass> result;
     const double radians = heading * M_PI / 180;
-    const QPointF across(std::cos(radians), -std::sin(radians));
     const QPointF along(std::sin(radians), std::cos(radians));
     auto local = [&](const QGeoCoordinate& coordinate) {
         const double azimuth = center.azimuthTo(coordinate) * M_PI / 180;
@@ -21,15 +20,18 @@ inline QList<Pass> passes(const QList<QPair<QGeoCoordinate, QGeoCoordinate>>& le
     };
     for (const auto& leg : legs) {
         if (leg.first.distanceTo(leg.second) < 0.1) continue;
-        const auto midpoint = (local(leg.first) + local(leg.second)) / 2;
-        result.append({leg.first, leg.second, QPointF::dotProduct(midpoint, across)});
+        const auto start=local(leg.first), end=local(leg.second), delta=end-start;
+        const double t=std::clamp(-QPointF::dotProduct(start,delta)/QPointF::dotProduct(delta,delta),0.,1.);
+        const auto nearest=start+t*delta;
+        result.append({leg.first,leg.second,std::hypot(nearest.x(),nearest.y())});
     }
     std::stable_sort(result.begin(), result.end(), [](const Pass& a, const Pass& b) {
-        return std::abs(a.across) < std::abs(b.across);
+        return a.distance < b.distance;
     });
     bool forward = result.isEmpty() || center.distanceTo(result.first().start) <= center.distanceTo(result.first().end);
     if (!result.isEmpty() && QPointF::dotProduct(local(result.first().end) - local(result.first().start), along) < 0)
         forward = !forward;
+    if (reverseEntry) forward = !forward;
     for (auto& pass : result) {
         const bool aligned = QPointF::dotProduct(local(pass.end) - local(pass.start), along) > 0;
         if (aligned != forward) std::swap(pass.start, pass.end);

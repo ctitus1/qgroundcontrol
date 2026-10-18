@@ -33,6 +33,8 @@ class ChimeraMissionItem : public ComplexMissionItem
 public:
     ChimeraMissionItem(PlanMasterController* master, bool flyView, const QString& kind, ChimeraPlanner* planner);
     int fleetRegion() const { return _fleetRegion; }
+    QGeoCoordinate searchCenter() const { return _searchCenter; }
+    void setSearchCenter(const QGeoCoordinate& center);
     bool centerOut() const { return _centerOut; }
     void setFleetRegion(int region) { _fleetRegion = region; _centerOut = region >= 0; rebuild(); }
     QVariantList cameraPresets() const;
@@ -42,6 +44,7 @@ public:
     bool hasEndSplit() const { return !_groupId.isEmpty() && _end < 1; }
     bool linkedSurvey() const { return !_groupId.isEmpty(); }
     QVariantList splitHandles() const;
+    Q_INVOKABLE void rotateEntryPoint();
     Q_INVOKABLE QString addSplitPoint(const QGeoCoordinate& coordinate);
     Q_INVOKABLE void moveEndSplit(const QGeoCoordinate& coordinate);
     Q_INVOKABLE QString removeEndSplit();
@@ -111,6 +114,7 @@ private:
     double homeAltitude() const;
     int _fleetRegion = -1;
     bool _centerOut = false;
+    QGeoCoordinate _searchCenter;
     QString _kind;
     ChimeraPlanner* _planner;
     SurveyComplexItem* _survey;

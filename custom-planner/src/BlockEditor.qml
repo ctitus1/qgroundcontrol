@@ -85,6 +85,18 @@ Rectangle {
             font.pointSize: ScreenTools.smallFontPointSize
             text: qsTr("Heading and track angle change together.")
         }
+        QGCButton {
+            text: qsTr("Rotate entry point")
+            visible: root.block.kind === "survey" && !root.fleetMasterSource
+            enabled: !root.block.splitPart
+            Layout.fillWidth: true
+            onClicked: root.block.rotateEntryPoint()
+        }
+        QGCLabel {
+            visible: root.block.kind === "survey" && root.block.centerOut && !root.fleetMasterSource
+            Layout.fillWidth: true; wrapMode: Text.WordWrap
+            text: qsTr("Rotate entry reverses the first pass. Center-out order and aircraft heading stay fixed.")
+        }
         QGCLabel { text: qsTr("Camera"); visible: root.block.kind === "survey" }
         QGCComboBox {
             objectName: "cameraPresetSelector"

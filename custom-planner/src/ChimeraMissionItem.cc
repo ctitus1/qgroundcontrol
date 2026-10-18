@@ -114,6 +114,7 @@ ChimeraMissionItem::ChimeraMissionItem(PlanMasterController* master, bool flyVie
     _values["delay"] = 60.;
     _values["angle"] = 0.;
     _values["pitch"] = -70.;
+    _values["entryPoint"] = 0.;
     auto keys = _values.keys(); keys.append("latitude"); keys.append("longitude");
     for (const auto& key : keys) {
         if (key == "enabled") continue;
@@ -366,6 +367,7 @@ void ChimeraMissionItem::rebuild()
         _survey->gridAngle()->setRawValue(_values["angle"]);
         _survey->setProperty("chimeraSurvey", _values);
         _survey->setProperty("chimeraCenterOut", _centerOut);
+        _survey->setProperty("chimeraSearchCenter", QVariant::fromValue(_searchCenter));
         QObject owner;
         QList<MissionItem*> generated; QVariantList path;
         bool built = true;
@@ -517,7 +519,7 @@ void ChimeraMissionItem::save(QJsonArray& items)
     QJsonArray polygon;
     for (const auto& c : surveyAreaPolygon()->coordinateList()) polygon.append(QJsonArray{c.latitude(), c.longitude()});
     items.append(QJsonObject{{"type", "ComplexItem"}, {"complexItemType", "chimera-" + _kind}, {"version", linkedSurvey() ? 3 : splitPart() ? 2 : 1},
-        {"fleetRegion", _fleetRegion}, {"centerOut", _centerOut}, {"cameraPreset", _cameraPreset}, {"values", QJsonObject::fromVariantMap(_values)}, {"position", QJsonArray{_position.latitude(), _position.longitude()}},
+        {"searchCenter", _searchCenter.isValid() ? QJsonArray{_searchCenter.latitude(), _searchCenter.longitude()} : QJsonArray{}}, {"fleetRegion", _fleetRegion}, {"centerOut", _centerOut}, {"cameraPreset", _cameraPreset}, {"values", QJsonObject::fromVariantMap(_values)}, {"position", QJsonArray{_position.latitude(), _position.longitude()}},
         {"polygon", polygon}, {"surveyGroup", _groupId}, {"rangeStart", _start}, {"rangeEnd", _end}, {"frozenRoute", _frozen}, {"resume", _resume}, {"inspections", QJsonArray::fromVariantList(_inspections)}});
 }
 bool ChimeraMissionItem::load(const QJsonObject& json, int sequence, QString& error)
@@ -530,6 +532,7 @@ bool ChimeraMissionItem::load(const QJsonObject& json, int sequence, QString& er
         QScopedValueRollback<bool> guard(_updating, true);
         const auto values = json["values"].toObject().toVariantMap();
         for (auto it = _values.begin(); it != _values.end(); ++it) {
+            if (it.key() == "entryPoint" && !values.contains(it.key())) { it.value() = 0.; continue; }
             if (!values.contains(it.key()) || !std::isfinite(values[it.key()].toDouble())) {
                 error = tr("Missing or invalid Chimera setting: %1").arg(it.key()); return false;
             }
@@ -543,6 +546,8 @@ bool ChimeraMissionItem::load(const QJsonObject& json, int sequence, QString& er
         _inspections = json["inspections"].toArray().toVariantList();
         _fleetRegion = json["fleetRegion"].toInt(-1);
         _centerOut = json["centerOut"].toBool();
+        const auto searchCenter=json["searchCenter"].toArray();
+        _searchCenter=searchCenter.size()==2 ? QGeoCoordinate(searchCenter[0].toDouble(),searchCenter[1].toDouble()) : QGeoCoordinate();
         _cameraPreset = json["cameraPreset"].toString();
         _syncedCameraPreset = _cameraPreset;
         _groupId = json["surveyGroup"].toString();
@@ -649,6 +654,12 @@ QString ChimeraMissionItem::splitAt(double fraction)
     if (!continuation) return tr("Could not create the survey continuation.");
     QString error;
     if (!continuation->load(json, continuation->sequenceNumber(), error)) { controller->removeVisualItem(index + 1); return error; }
+    {
+        QScopedValueRollback<bool> guard(continuation->_updating, true);
+        continuation->surveyAreaPolygon()->setPath(surveyAreaPolygon()->coordinateList());
+        continuation->_syncedPolygon = surveyAreaPolygon()->coordinateList();
+    }
+    continuation->rebuild();
     _groupId = group; _end = fraction;
     _syncedValues = _values; _syncedPolygon = surveyAreaPolygon()->coordinateList();
     rebuild();
@@ -656,12 +667,26 @@ QString ChimeraMissionItem::splitAt(double fraction)
     return {};
 }
 
+void ChimeraMissionItem::setSearchCenter(const QGeoCoordinate& center)
+{
+    const QGeoCoordinate horizontal(center.latitude(),center.longitude());
+    if (!horizontal.isValid() || _searchCenter==horizontal) return;
+    _searchCenter=horizontal;
+    rebuild();
+}
+
+void ChimeraMissionItem::rotateEntryPoint()
+{
+    if (!isSurveyItem() || splitPart()) return;
+    setValue("entryPoint", (int(_values["entryPoint"].toDouble()) + 1) % (_centerOut ? 2 : 4));
+}
+
 void ChimeraMissionItem::moveEndSplit(const QGeoCoordinate& coordinate)
 {
     auto* next = nextPart();
-    if (!next) return;
+    if (!next || _updating) return;
     const double fraction = routeFraction(routePoints(_generated), coordinate);
-    if (fraction <= _start + 1e-6 || fraction >= next->_end - 1e-6) return;
+    if (qAbs(fraction - _end) < 1e-8 || fraction <= _start + 1e-6 || fraction >= next->_end - 1e-6) return;
     _end = fraction; next->_start = fraction;
     rebuild(); next->rebuild();
 }

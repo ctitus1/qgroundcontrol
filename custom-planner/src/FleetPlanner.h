@@ -14,7 +14,7 @@ class FleetPlanner : public QObject
     Q_OBJECT
     Q_PROPERTY(bool enabled READ enabled NOTIFY controllersChanged)
     Q_PROPERTY(int selected READ selected WRITE setSelected NOTIFY controllersChanged)
-    Q_PROPERTY(PlanMasterController* activeController READ activeController NOTIFY controllersChanged)
+    Q_PROPERTY(PlanMasterController* activeController READ activeController NOTIFY activeControllerChanged)
     Q_PROPERTY(QVariantList drones READ drones NOTIFY profilesChanged)
     Q_PROPERTY(QVariantList overlays READ overlays NOTIFY changed)
     Q_PROPERTY(bool showRoutes MEMBER _showRoutes NOTIFY changed)
@@ -29,6 +29,7 @@ class FleetPlanner : public QObject
 public:
     explicit FleetPlanner(QObject* parent = nullptr);
     Q_INVOKABLE void attach(PlanMasterController* master);
+    Q_INVOKABLE void requestCreate(QObject* source, int count, double minimum, double maximum, double maximumGap);
     Q_INVOKABLE QString create(QObject* source, int count, double minimum, double maximum, double maximumGap);
     Q_INVOKABLE QString setCount(int count);
     Q_INVOKABLE void setProfile(int drone, const QString& key, double value);
@@ -64,6 +65,7 @@ public:
 signals:
     void changed();
     void controllersChanged();
+    void activeControllerChanged();
     void profilesChanged();
     void translated(double distance, double azimuth);
 private:
