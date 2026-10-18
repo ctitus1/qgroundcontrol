@@ -5,6 +5,7 @@
 #include <QJsonObject>
 #include <QTimer>
 #include "PlanMasterController.h"
+#include "Splitters/RegionSplitter.h"
 class ChimeraMissionItem;
 class ChimeraPlanner;
 
@@ -16,6 +17,10 @@ class FleetPlanner : public QObject
     Q_PROPERTY(PlanMasterController* activeController READ activeController NOTIFY controllersChanged)
     Q_PROPERTY(QVariantList drones READ drones NOTIFY profilesChanged)
     Q_PROPERTY(QVariantList overlays READ overlays NOTIFY changed)
+    Q_PROPERTY(bool showRoutes MEMBER _showRoutes NOTIFY changed)
+    Q_PROPERTY(bool night READ night WRITE setNight NOTIFY profilesChanged)
+    Q_PROPERTY(QVariantList cameraPresets READ cameraPresets NOTIFY controllersChanged)
+    Q_PROPERTY(QVariantList controlPoints READ controlPoints NOTIFY changed)
     Q_PROPERTY(QString error READ error NOTIFY changed)
     Q_PROPERTY(double minimum READ minimum NOTIFY changed)
     Q_PROPERTY(double maximum READ maximum NOTIFY changed)
@@ -28,6 +33,16 @@ public:
     Q_INVOKABLE QString setCount(int count);
     Q_INVOKABLE void setProfile(int drone, const QString& key, double value);
     Q_INVOKABLE void setLayers(double minimum, double maximum, double maximumGap);
+    Q_INVOKABLE void setNight(bool night);
+    bool night() const { return _night; }
+    QVariantList cameraPresets() const;
+    QVariantList controlPoints() const;
+    Q_INVOKABLE void setPartitionPoint(int index, const QGeoCoordinate& coordinate);
+    Q_INVOKABLE void resetPartition();
+    Q_INVOKABLE void finishPartitionDrag() { synchronize(); }
+    Q_INVOKABLE void applyDroneSettings(int drone, const QString& field = QString());
+    Q_INVOKABLE void editRegion(int drone, int region);
+    Q_INVOKABLE QString exportAll(const QString& filename);
     Q_INVOKABLE QString exportDrone(int drone, const QString& filename);
     bool enabled() const { return !_children.isEmpty(); }
     bool owns(PlanMasterController* controller) const;
@@ -57,6 +72,11 @@ private:
     ChimeraMissionItem* fiducial() const;
     void watch();
     void archive();
+    QString rebuildFleet(int count);
+    QVariantMap defaultProfile(int drone, int count) const;
+    void updateCamera(QVariantMap& profile) const;
+    SplitInput partitionInput(int count) const;
+    void movePartition(double distance, double azimuth);
     void notify();
     void clear(bool immediate = false);
     PlanMasterController* makeChild();
@@ -68,6 +88,11 @@ private:
     QPointer<PlanMasterController> _publishedController;
     int _publishedSelection = -1;
     bool _publishedEnabled = false;
+    bool _night = false, _showRoutes = true;
+    QGeoCoordinate _partitionCenter, _partitionOrigin;
+    QList<QGeoCoordinate> _partitionVertices, _partitionPolygon;
+    mutable SplitInput _cachedInput;
+    mutable QList<QList<QGeoCoordinate>> _cachedRegions;
     double _minimum = 30, _maximum = 60, _maximumGap = 0;
     int _selected = 0;
     bool _updating = false;

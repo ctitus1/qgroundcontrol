@@ -281,6 +281,31 @@ void schedulePlannerSmoke(QQmlApplicationEngine* engine, ChimeraPlanner*)
                     check(region->route().size() >= 3, "Center-first route generated");
                 }
             }
+            fleet.setNight(true);
+            for (int drone=0;drone<3;++drone) {
+                fleet.setSelected(drone+1);
+                auto* items=fleet.activeController()->missionController()->visualItems();
+                for (int phase=0;phase<3;++phase)
+                    check(qobject_cast<ChimeraMissionItem*>(items->get(3+phase))->cameraPreset()==2*(drone+1), "Night mode applies aircraft thermal intrinsics to all regions");
+            }
+            fleet.setNight(false);
+            fleet.setProfile(0,"speed",1.7);
+            fleet.setSelected(1);
+            for (int phase=0;phase<3;++phase)
+                check(qobject_cast<ChimeraMissionItem*>(fleet.activeController()->missionController()->visualItems()->get(3+phase))->values()["speed"].toDouble()==1.7, "Master settings apply across a drone's regions");
+            const auto controls=fleet.controlPoints();
+            check(controls.size()==4,"Master has a center and one ray handle per region");
+            fleet.setPartitionPoint(0,controls[0].value<QGeoCoordinate>().atDistanceAndAzimuth(5,90));
+            fleet.setPartitionPoint(1,controls[1].value<QGeoCoordinate>().atDistanceAndAzimuth(8,90));
+            fleet.finishPartitionDrag();
+            const auto partitionCenter=fleet.controlPoints()[0].value<QGeoCoordinate>();
+            const auto originalPolygon=domain->surveyAreaPolygon()->coordinateList();
+            auto resizedPolygon=originalPolygon; resizedPolygon[0]=resizedPolygon[0].atDistanceAndAzimuth(4,270);
+            domain->surveyAreaPolygon()->setPath(resizedPolygon); fleet.synchronize();
+            check(fleet.controlPoints()[0].value<QGeoCoordinate>().distanceTo(partitionCenter)<0.01,"Boundary resizing leaves the partition center fixed");
+            domain->surveyAreaPolygon()->setPath(originalPolygon); fleet.synchronize();
+            check(fleet.controlPoints()[0].value<QGeoCoordinate>().distanceTo(controls[0].value<QGeoCoordinate>())>4,"Move the partition center independently");
+            check(fleet.validate().isEmpty(),fleet.validate());
             fleet.setSelected(1);
             auto* childMission = fleet.activeController()->missionController();
             auto* region = qobject_cast<ChimeraMissionItem*>(childMission->visualItems()->get(3));
@@ -308,6 +333,7 @@ void schedulePlannerSmoke(QQmlApplicationEngine* engine, ChimeraPlanner*)
             auto* archivedRegion = qobject_cast<ChimeraMissionItem*>(fleet.activeController()->missionController()->visualItems()->get(3));
             archivedRegion->setValue("speed", 2.5);
             check(fleet.setCount(2).isEmpty(), "Archive a removed drone before save");
+            const auto savedControls=fleet.controlPoints();
             auto fleetJson = fleetMaster.saveToJson().object();
             auto fleetMissionJson = fleetJson["mission"].toObject();
             fleet.save(&fleetMaster, fleetMissionJson); fleetJson["mission"] = fleetMissionJson;
@@ -315,6 +341,7 @@ void schedulePlannerSmoke(QQmlApplicationEngine* engine, ChimeraPlanner*)
             check(restoredFleet.missionController()->load(fleetMissionJson, error), error);
             fleet.attach(&restoredFleet); fleet.load(&restoredFleet, fleetJson);
             check(fleet.enabled() && fleet.validate().isEmpty(), "Master restores all drone missions");
+            check(fleet.controlPoints().size()==savedControls.size() && fleet.controlPoints()[0].value<QGeoCoordinate>().distanceTo(savedControls[0].value<QGeoCoordinate>())<0.01,"Master restores partition controls");
             check(fleet.setCount(3).isEmpty(), "Restore an archived drone after reload");
             fleet.setSelected(3);
             archivedRegion = qobject_cast<ChimeraMissionItem*>(fleet.activeController()->missionController()->visualItems()->get(3));
@@ -322,6 +349,19 @@ void schedulePlannerSmoke(QQmlApplicationEngine* engine, ChimeraPlanner*)
             fleet.setSelected(1);
             check(fleet.activeController()->missionController()->visualItems()->count() == countBefore, "Master preserves manual drone mission items");
             check(fleet.exportDrone(0, "/tmp/qgc-fleet-drone.plan").isEmpty(), "Export a single drone plan");
+            fleet.setProfile(0,"startRegion",1);
+            fleet.setSelected(1);
+            check(qobject_cast<ChimeraMissionItem*>(fleet.activeController()->missionController()->visualItems()->get(3))->fleetRegion()==1, "Master region assignment reorders complete survey groups");
+            check(fleet.drones()[1].toMap()["startRegion"].toInt()==0 && fleet.validate().isEmpty(), "Region assignment swaps owners without losing coverage or splits");
+            fleet.setProfile(0,"startRegion",0);
+            fleet.setProfile(0,"uas",2);
+            check(fleet.drones()[0].toMap()["uas"].toInt()==2 && fleet.drones()[1].toMap()["uas"].toInt()==1,"Aircraft identities remain unique");
+            fleet.setProfile(0,"uas",1);
+            for (int uas=1;uas<=3;++uas) QFile::remove(QString("/tmp/chimera-master-smoke-uas%1.plan").arg(uas));
+            check(fleet.exportAll("/tmp/chimera-master-smoke.plan").isEmpty(),"Export all drones from a mission name");
+            QFile exportedMaster("/tmp/chimera-master-smoke.plan"); check(exportedMaster.open(QIODevice::ReadOnly),"Batch export saves the editable master");
+            check(QJsonDocument::fromJson(exportedMaster.readAll()).object()["mission"].toObject()["chimeraFleet"].toObject()["plans"].toArray().size()==3,"Exported master contains all drone plans");
+            for (int uas=1;uas<=3;++uas) check(QFile::exists(QString("/tmp/chimera-master-smoke-uas%1.plan").arg(uas)),"Aircraft export filename");
             context.setContextProperty("chimeraFleet", &fleet);
             QQmlComponent fleetBar(engine, QUrl("qrc:/Planner/FleetBar.qml"));
             check(fleetBar.isReady(), fleetBar.errorString());
@@ -353,6 +393,10 @@ void schedulePlannerSmoke(QQmlApplicationEngine* engine, ChimeraPlanner*)
             check(QMetaObject::invokeMethod(liveMaster,"fitViewportToItems"),"Fit fleet master map");
             QEventLoop viewEvents; QTimer::singleShot(250,&viewEvents,&QEventLoop::quit); viewEvents.exec();
             mainWindow->grabWindow().save("/tmp/qgc-fleet-master.png");
+            liveFleet->setProperty("showRoutes",false);
+            QTimer::singleShot(150,&viewEvents,&QEventLoop::quit); viewEvents.exec();
+            mainWindow->grabWindow().save("/tmp/qgc-fleet-sectors.png");
+            liveFleet->setProperty("showRoutes",true);
             liveFleet->setSelected(1);
             auto* liveMission=liveFleet->activeController()->missionController();
             liveMission->setCurrentPlanViewSeqNum(qobject_cast<VisualMissionItem*>(liveMission->visualItems()->get(3))->sequenceNumber(),true);
