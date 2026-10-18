@@ -8,6 +8,7 @@
 #include "PlanMasterController.h"
 #include "MissionController.h"
 #include "MissionItem.h"
+#include "MissionSettingsItem.h"
 #include "QGCMapPolygon.h"
 #include "QGCCorePlugin.h"
 #include "QmlObjectListModel.h"
@@ -421,6 +422,31 @@ void schedulePlannerSmoke(QQmlApplicationEngine* engine, ChimeraPlanner*)
             check(fleet.activeController()->missionController()->visualItems()->count() == countBefore, "Master preserves manual drone mission items");
             check(qobject_cast<ChimeraMissionItem*>(fleet.activeController()->missionController()->visualItems()->get(3))->values()["entryPoint"].toInt()==1,"Master reload preserves rotated entry");
             check(fleet.exportDrone(0, "/tmp/qgc-fleet-drone.plan").isEmpty(), "Export a single drone plan");
+            check(fleet.exportDrone(0,"/tmp/qgc-fleet-plain.plan",true).isEmpty(),"Export standard QGC mission");
+            QFile plainFile("/tmp/qgc-fleet-plain.plan"); check(plainFile.open(QIODevice::ReadOnly),"Read standard mission");
+            const auto plainMission=QJsonDocument::fromJson(plainFile.readAll()).object()["mission"].toObject();
+            check(!plainMission.contains("chimeraFleet"),"Standard mission has no fleet metadata");
+            const auto plainItems=plainMission["items"].toArray();
+            QObject exportOwner;
+            QList<MissionItem*> uploadItems;
+            auto* exportVisuals=fleet.activeController()->missionController()->visualItems();
+            for (int i=0;i<exportVisuals->count();++i)
+                qobject_cast<VisualMissionItem*>(exportVisuals->get(i))->appendMissionItems(uploadItems,&exportOwner);
+            qobject_cast<MissionSettingsItem*>(exportVisuals->get(0))->addMissionEndAction(uploadItems,uploadItems.size(),&exportOwner);
+            check(plainItems.size()==uploadItems.size()-1,"Standard export contains every upload command except home");
+            for (int i=0;i<plainItems.size();++i) {
+                const auto item=plainItems[i].toObject();
+                QJsonObject expected; uploadItems[i+1]->save(expected);
+                expected=QJsonDocument::fromJson(QJsonDocument(expected).toJson()).object();
+                check(item["type"]=="SimpleItem" && !item.contains("complexItemType"),"Standard export uses only simple items");
+                for (const auto* key : {"command","frame","params","autoContinue"})
+                    check(item[key]==expected[key],QString("Standard export preserves command %1 field %2").arg(i).arg(key));
+            }
+            PlanMasterController plainController; plainController.setFlyView(false); plainController.start(true);
+            check(plainController.missionController()->load(plainMission,error),error);
+            auto* plainVisuals=plainController.missionController()->visualItems();
+            for (int i=1;i<plainVisuals->count();++i)
+                check(!qobject_cast<ChimeraMissionItem*>(plainVisuals->get(i)),"Standard mission loads without custom blocks");
             fleet.setProfile(0,"startRegion",1);
             fleet.setSelected(1);
             check(qobject_cast<ChimeraMissionItem*>(fleet.activeController()->missionController()->visualItems()->get(3))->fleetRegion()==1, "Master region assignment reorders complete survey groups");
@@ -431,6 +457,8 @@ void schedulePlannerSmoke(QQmlApplicationEngine* engine, ChimeraPlanner*)
             fleet.setProfile(0,"uas",1);
             for (int uas=1;uas<=3;++uas) QFile::remove(QString("/tmp/chimera-master-smoke-uas%1.plan").arg(uas));
             check(fleet.exportAll("/tmp/chimera-master-smoke.plan").isEmpty(),"Export all drones from a mission name");
+            check(fleet.exportAll("/tmp/chimera-plain-smoke.plan",true).isEmpty(),"Export all drones as standard missions");
+            check(QFile::exists("/tmp/chimera-plain-smoke-uas1-plain.plan"),"Standard fleet export uses distinct filenames");
             QFile exportedMaster("/tmp/chimera-master-smoke.plan"); check(exportedMaster.open(QIODevice::ReadOnly),"Batch export saves the editable master");
             check(QJsonDocument::fromJson(exportedMaster.readAll()).object()["mission"].toObject()["chimeraFleet"].toObject()["plans"].toArray().size()==3,"Exported master contains all drone plans");
             for (int uas=1;uas<=3;++uas) check(QFile::exists(QString("/tmp/chimera-master-smoke-uas%1.plan").arg(uas)),"Aircraft export filename");

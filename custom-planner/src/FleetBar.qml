@@ -7,6 +7,7 @@ import QGroundControl.Palette
 Rectangle {
     id: root
     property var fit
+    property bool standardExport: false
     width: bar.implicitWidth + 16
     height: bar.implicitHeight + 12
     color: qgcPal.windowShadeDark
@@ -22,14 +23,19 @@ Rectangle {
         }
         QGCLabel { text: qsTr("Layer gap: %1 m").arg(chimeraFleet.separation.toFixed(1)) }
         QGCButton { text: qsTr("Master setup"); onClicked: settings.open() }
-        QGCButton { text: qsTr("Export all"); onClicked: exportDialog.openForSave() }
+        QGCButton { text: qsTr("Export all"); onClicked: exportMenu.popup() }
+    }
+    QGCMenu {
+        id: exportMenu
+        QGCMenuItem { text: qsTr("Editable plans"); onTriggered: { root.standardExport = false; exportDialog.openForSave() } }
+        QGCMenuItem { text: qsTr("Standard QGC plans (no plugin)"); onTriggered: { root.standardExport = true; exportDialog.openForSave() } }
     }
     QGCFileDialog {
         id: exportDialog
         title: qsTr("Mission name for all drone plans")
         nameFilters: [qsTr("QGC plan (*.plan)")]
         onAcceptedForSave: file => {
-            const error = chimeraFleet.exportAll(file)
+            const error = chimeraFleet.exportAll(file, root.standardExport)
             if (error) mainWindow.showMessageDialog(qsTr("Fleet plan"), error)
             close()
         }

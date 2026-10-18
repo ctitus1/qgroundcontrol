@@ -1,6 +1,7 @@
 #include "FleetPlanner.h"
 #include "QGCApplication.h"
 #include "ChimeraMissionItem.h"
+#include "ChimeraPlanner.h"
 #include "QGCMapPolygon.h"
 #include "QmlObjectListModel.h"
 #include "SimpleMissionItem.h"
@@ -619,10 +620,11 @@ void FleetPlanner::load(PlanMasterController* controller,const QJsonObject& plan
         if (block->fleetRegion()>=0) block->setSearchCenter(searchCenter);
     watch(); notify();
 }
-QString FleetPlanner::exportDrone(int drone,const QString& filename)
+QString FleetPlanner::exportDrone(int drone,const QString& filename,bool standardItems)
 {
     synchronize(); const auto error=validate(); if (!error.isEmpty()) return error;
     if (drone<0 || drone>=_children.size()) return tr("Select a drone to export.");
+    if (standardItems) return ChimeraPlanner().exportPlan(_children[drone],filename);
     auto root=_children[drone]->saveToJson().object(); auto mission=root["mission"].toObject(); auto items=mission["items"].toArray();
     for (int i=0;i<items.size();++i) { auto item=items[i].toObject(); item.remove("fleetRegion"); items[i]=item; }
     mission["items"]=items; root["mission"]=mission;
@@ -743,15 +745,15 @@ void FleetPlanner::editRegion(int drone,int region)
         _children[drone]->missionController()->setCurrentPlanViewSeqNum(block->sequenceNumber(),true); return;
     }
 }
-QString FleetPlanner::exportAll(const QString& filename)
+QString FleetPlanner::exportAll(const QString& filename,bool standardItems)
 {
     synchronize(); const auto error=validate(); if (!error.isEmpty()) return error;
     QString base=QUrl(filename).isLocalFile()?QUrl(filename).toLocalFile():filename;
     if (base.endsWith(".plan",Qt::CaseInsensitive)) base.chop(5);
     if (QFileInfo(base).fileName().isEmpty()) return tr("Enter a mission name.");
     for (int i=0;i<_children.size();++i) {
-        const auto path=QString("%1-uas%2.plan").arg(base).arg(_profiles[i].toMap().value("uas",i+1).toInt());
-        const auto result=exportDrone(i,path); if (!result.isEmpty()) return tr("Could not export %1: %2").arg(path,result);
+        const auto path=QString("%1-uas%2%3.plan").arg(base).arg(_profiles[i].toMap().value("uas",i+1).toInt()).arg(standardItems ? "-plain" : "");
+        const auto result=exportDrone(i,path,standardItems); if (!result.isEmpty()) return tr("Could not export %1: %2").arg(path,result);
     }
     auto master=_master->saveToJson().object(); auto mission=master["mission"].toObject();
     save(_master,mission); master["mission"]=mission;

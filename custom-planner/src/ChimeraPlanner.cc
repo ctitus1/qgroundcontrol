@@ -1,5 +1,6 @@
 #include <memory>
 #include "ChimeraPlanner.h"
+#include "ChimeraMissionItem.h"
 #include "CameraCalc.h"
 #include "MissionController.h"
 #include "MissionItem.h"
@@ -201,9 +202,9 @@ QVariantMap ChimeraPlanner::preview(SurveyComplexItem* survey, const QVariantLis
 
 QString ChimeraPlanner::exportPlan(QObject* item, const QString& filename)
 {
-    auto* survey = qobject_cast<SurveyComplexItem*>(item);
-    if (!survey) return tr("Select a survey first.");
-    auto* controller = survey->masterController();
+    auto* controller = qobject_cast<PlanMasterController*>(item);
+    if (auto* visual = qobject_cast<VisualMissionItem*>(item)) controller = visual->masterController();
+    if (!controller) return tr("Select a mission first.");
     QString path = QUrl(filename).isLocalFile() ? QUrl(filename).toLocalFile() : filename;
     if (!path.endsWith(".plan", Qt::CaseInsensitive)) path += ".plan";
     if (QFileInfo(path).absoluteFilePath() == QFileInfo(controller->currentPlanFile()).absoluteFilePath()) {
@@ -214,6 +215,11 @@ QString ChimeraPlanner::exportPlan(QObject* item, const QString& filename)
     auto* visualItems = controller->missionController()->visualItems();
     for (int i = 0; i < visualItems->count(); ++i) {
         auto* visual = qobject_cast<VisualMissionItem*>(visualItems->get(i));
+        if (auto* block = qobject_cast<ChimeraMissionItem*>(visual)) {
+            if (!block->error().isEmpty()) return block->error();
+            const auto error = block->linkedSurveyError();
+            if (!error.isEmpty()) return error;
+        }
         auto* candidate = qobject_cast<SurveyComplexItem*>(visual);
         if (candidate && settings(candidate)["enabled"].toBool()) {
             QList<MissionItem*> generated;
@@ -245,6 +251,7 @@ QString ChimeraPlanner::exportPlan(QObject* item, const QString& filename)
     auto root = controller->saveToJson().object();
     auto mission = root["mission"].toObject();
     mission["items"] = items;
+    mission.remove("chimeraFleet");
     root["mission"] = mission;
     QSaveFile file(path);
     if (!file.open(QIODevice::WriteOnly)) return file.errorString();

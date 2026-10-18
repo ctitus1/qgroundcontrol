@@ -185,5 +185,24 @@ Rectangle {
                 onClicked: root.block.clearInspections()
             }
         }
+        QGCButton {
+            text: qsTr("Export standard QGC plan…")
+            visible: !chimeraFleet.enabled || chimeraFleet.selected > 0
+            Layout.fillWidth: true
+            onClicked: plainExport.openForSave()
+        }
+        QGCFileDialog {
+            id: plainExport
+            title: qsTr("Export whole mission as standard QGC items")
+            nameFilters: [qsTr("QGC plan (*.plan)")]
+            onAcceptedForSave: file => {
+                const error = chimeraFleet.enabled
+                    ? chimeraFleet.exportDrone(chimeraFleet.selected - 1, file, true)
+                    : chimeraPlanner.exportPlan(root.block, file)
+                if (error) mainWindow.showMessageDialog(qsTr("Export mission"), error)
+                close()
+            }
+        }
+
     }
 }

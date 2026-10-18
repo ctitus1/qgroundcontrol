@@ -43,8 +43,8 @@ public:
     Q_INVOKABLE void finishPartitionDrag() { synchronize(); }
     Q_INVOKABLE void applyDroneSettings(int drone, const QString& field = QString());
     Q_INVOKABLE void editRegion(int drone, int region);
-    Q_INVOKABLE QString exportAll(const QString& filename);
-    Q_INVOKABLE QString exportDrone(int drone, const QString& filename);
+    Q_INVOKABLE QString exportAll(const QString& filename, bool standardItems = false);
+    Q_INVOKABLE QString exportDrone(int drone, const QString& filename, bool standardItems = false);
     bool enabled() const { return !_children.isEmpty(); }
     bool owns(PlanMasterController* controller) const;
     bool isMaster(PlanMasterController* controller) const { return enabled() && controller == _master; }
