@@ -1,5 +1,7 @@
 #include <memory>
 #include "ChimeraPlanner.h"
+#include "ChimeraMissionItem.h"
+#include "QGCApplication.h"
 #include "CameraCalc.h"
 #include "MissionController.h"
 #include "MissionItem.h"
@@ -287,4 +289,35 @@ void ChimeraPlanner::loadSettings(PlanMasterController* controller, const QJsonO
             emit settingsChanged(survey);
         }
     }
+}
+
+QString ChimeraPlanner::placementPrompt() const
+{
+    if (!_placementSource) return {};
+    return _placementMode=="target" ? tr("Click the building or ROI on the map.") : tr("Click the survey route where the inspection should start.");
+}
+void ChimeraPlanner::beginInspection(QObject* source)
+{
+    auto* block=qobject_cast<ChimeraMissionItem*>(source);
+    if (!block || (block->kind()!="survey" && block->kind()!="inspection")) return;
+    _placementSource=source; _pause={}; _placementMode=block->kind()=="inspection"?"target":"pause"; emit displayChanged();
+}
+void ChimeraPlanner::beginSplit(QObject* source)
+{
+    _placementSource=source; _pause={}; _placementMode="split"; emit displayChanged();
+}
+void ChimeraPlanner::cancelPlacement()
+{
+    _placementSource.clear(); _pause={}; _placementMode.clear(); emit displayChanged();
+}
+bool ChimeraPlanner::handleMapClick(const QGeoCoordinate& coordinate,QObject* controller)
+{
+    auto* block=qobject_cast<ChimeraMissionItem*>(_placementSource.data());
+    if (!block) return false;
+    if (block->masterController()!=controller) { cancelPlacement(); return false; }
+    if (_placementMode=="pause") { _pause=block->nearestRoutePoint(coordinate); _placementMode="target"; emit displayChanged(); return true; }
+    const auto mode=_placementMode; const auto pause=_pause; cancelPlacement();
+    const auto error=mode=="split" ? block->addSplitPoint(coordinate) : block->insertOrbit(pause,coordinate);
+    if (!error.isEmpty()) qgcApp()->showAppMessage(error);
+    return true;
 }

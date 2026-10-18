@@ -22,6 +22,7 @@ class ChimeraMissionItem : public ComplexMissionItem
     Q_PROPERTY(bool linkedSurvey READ linkedSurvey NOTIFY changed)
     Q_PROPERTY(QVariantList splitHandles READ splitHandles NOTIFY changed)
     Q_PROPERTY(bool splitPart READ splitPart NOTIFY changed)
+    Q_PROPERTY(QString inspectionName READ inspectionName WRITE setInspectionName NOTIFY changed)
     Q_PROPERTY(QString kind READ kind CONSTANT)
     Q_PROPERTY(QVariantMap values READ values NOTIFY changed)
     Q_PROPERTY(QVariantList route READ route NOTIFY changed)
@@ -49,6 +50,11 @@ public:
     QString linkedSurveyError() const;
     bool splitPart() const { return !_frozen.isEmpty(); }
     Q_INVOKABLE void clearInspections() { _inspections.clear(); rebuild(); }
+    QString inspectionName() const { return _inspectionName; }
+    void setInspectionName(const QString& name);
+    QGeoCoordinate nearestRoutePoint(const QGeoCoordinate& coordinate) const;
+    Q_INVOKABLE QString insertOrbit(const QGeoCoordinate& pause, const QGeoCoordinate& target);
+    Q_INVOKABLE QString expandInspection();
     QString kind() const { return _kind; }
     QVariantMap values() const { return _values; }
     QVariantList route() const { return _route; }
@@ -70,9 +76,9 @@ public:
     bool specifiesCoordinate() const override { return true; }
     bool specifiesAltitudeOnly() const override { return false; }
     QString patternName() const override { return "Chimera " + _kind; }
-    QString commandName() const override { return patternName(); }
+    QString commandName() const override;
     QString commandDescription() const override { return patternName(); }
-    QString abbreviation() const override { return _kind == "survey" ? "S" : _kind == "fiducial" ? "F" : "V"; }
+    QString abbreviation() const override { return _kind == "survey" ? "S" : _kind == "fiducial" ? "F" : _kind == "inspection" ? "ROI" : "V"; }
     QGeoCoordinate coordinate() const override;
     QGeoCoordinate exitCoordinate() const override;
     double amslEntryAlt() const override;
@@ -86,8 +92,8 @@ public:
     double specifiedFlightSpeed() override { return _values.value("speed").toDouble(); }
     double specifiedGimbalYaw() override { return isSurveyItem() ? 0 : qQNaN(); }
     double specifiedGimbalPitch() override { return isSurveyItem() ? _values.value("pitch").toDouble() : qQNaN(); }
-    double specifiedVehicleYaw() override { return _values.value("yaw").toDouble(); }
-    bool exitCoordinateSameAsEntry() const override { return _kind != "survey"; }
+    double specifiedVehicleYaw() override { return _kind == "inspection" && _values.value("faceTarget").toBool() ? exitCoordinate().azimuthTo(_position) : _values.value("yaw").toDouble(); }
+    bool exitCoordinateSameAsEntry() const override { return _kind != "survey" && _kind != "inspection"; }
     void setDirty(bool dirty) override;
     void setCoordinate(const QGeoCoordinate& coordinate) override;
     void setSequenceNumber(int sequence) override;
@@ -97,7 +103,7 @@ public:
     QString mapVisualQML() const override { return "qrc:/Planner/BlockMap.qml"; }
     void appendMissionItems(QList<MissionItem*>& items, QObject* parent) override;
     void applyNewAltitude(double altitude) override { setValue("altitude", altitude); }
-    double additionalTimeDelay() const override { return _kind == "survey" ? 0 : _values.value("delay").toDouble(); }
+    double additionalTimeDelay() const override { return _kind == "survey" || _kind == "inspection" ? 0 : _values.value("delay").toDouble(); }
 signals:
     void changed();
     void translated(double distance, double azimuth);
@@ -112,6 +118,7 @@ private:
     int _fleetRegion = -1;
     bool _centerOut = false;
     QString _kind;
+    QString _inspectionName = QStringLiteral("Building inspection");
     ChimeraPlanner* _planner;
     SurveyComplexItem* _survey;
     SurveyComplexItem* _flightSurvey;

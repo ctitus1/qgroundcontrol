@@ -16,6 +16,7 @@ class FleetPlanner : public QObject
     Q_PROPERTY(int selected READ selected WRITE setSelected NOTIFY controllersChanged)
     Q_PROPERTY(PlanMasterController* activeController READ activeController NOTIFY controllersChanged)
     Q_PROPERTY(QVariantList drones READ drones NOTIFY profilesChanged)
+    Q_PROPERTY(QVariantList inspectionSummary READ inspectionSummary NOTIFY changed)
     Q_PROPERTY(QVariantList overlays READ overlays NOTIFY changed)
     Q_PROPERTY(bool showRoutes MEMBER _showRoutes NOTIFY changed)
     Q_PROPERTY(bool night READ night WRITE setNight NOTIFY profilesChanged)
@@ -52,6 +53,7 @@ public:
     PlanMasterController* activeController() const;
     QVariantList drones() const { return _profiles; }
     QVariantList overlays() const;
+    QVariantList inspectionSummary() const;
     QString error() const { return _error; }
     double minimum() const { return _minimum; }
     double maximum() const { return _maximum; }
