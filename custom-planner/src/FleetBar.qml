@@ -36,6 +36,7 @@ Rectangle {
     }
     Popup {
         id: settings
+        objectName: "fleetSettings"
         width: 360
         height: Math.min(650, (typeof mainWindow !== "undefined" ? mainWindow.height : 800) - 80)
         modal: true
@@ -47,6 +48,22 @@ Rectangle {
             ColumnLayout {
                 id: fields
                 width: parent.width
+                RowLayout {
+                    QGCLabel { text: qsTr("Drones"); Layout.fillWidth: true }
+                    QGCComboBox {
+                        model: [2,3,4,5,6,7,8]
+                        currentIndex: chimeraFleet.drones.length - 2
+                        Layout.preferredWidth: 100
+                        onActivated: index => {
+                            const error = chimeraFleet.setCount(index + 2)
+                            if (error) mainWindow.showMessageDialog(qsTr("Fleet plan"), error)
+                        }
+                    }
+                }
+                QGCLabel {
+                    Layout.fillWidth: true; wrapMode: Text.WordWrap
+                    text: qsTr("Change the count at any time. Removed drones and regions stay saved and return when the count increases. Existing split points follow their region. Manual inspection coordinates stay fixed.")
+                }
                 QGCLabel { text: qsTr("Shared altitude layers"); font.bold: true }
                 Repeater {
                     model: [["Minimum altitude (m)", "minimum"], ["Maximum altitude (m)", "maximum"], ["Maximum gap (m, 0 = no limit)", "maximumGap"]]

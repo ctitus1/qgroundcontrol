@@ -37,7 +37,7 @@ Rectangle {
             Layout.fillWidth: true; Layout.minimumWidth: 0
             font.pointSize: ScreenTools.smallFontPointSize
             wrapMode: Text.WordWrap
-            text: root.fleetMasterSource ? qsTr("Edit the shared area here. Use Fleet setup for headings and altitude layers, and drone views for camera settings and inspections.") : root.block.kind === "survey" ? (root.block.linkedSurvey ? qsTr("Edits apply to the whole linked survey.") : qsTr("The polygon defines the ground area to cover.")) :
+            text: root.fleetMasterSource ? qsTr("Edit the shared area and defaults for new regions here. Edit existing regions in drone views. Use Fleet setup for headings and altitude layers.") : root.block.kind === "survey" ? (root.block.linkedSurvey ? qsTr("Edits apply to the whole linked survey.") : qsTr("The polygon defines the ground area to cover.")) :
                   root.block.kind === "vantage" ? qsTr("Delay until 1 s arms vantage autonomy. 5g_drone controls the gimbal.") : qsTr("5g_drone controls the gimbal. Delay until is separate from waypoint hold time.")
         }
         SectionHeader { id: flightHeader; text: root.fleetMasterSource ? qsTr("Search area") : qsTr("Flight"); Layout.fillWidth: true }
@@ -46,7 +46,7 @@ Rectangle {
             Layout.fillWidth: true
             spacing: root.margin / 2
             Repeater {
-                model: root.fleetMasterSource ? [["latitude", "Latitude"], ["longitude", "Longitude"]] : root.block.kind === "survey" ? [
+                model: root.fleetMasterSource ? [["latitude", "Latitude"], ["longitude", "Longitude"], ["speed", "Default speed"], ["pitch", "Default gimbal pitch"], ["overlap", "Default side overlap"]] : root.block.kind === "survey" ? [
                     ["latitude", "Latitude"], ["longitude", "Longitude"], ["altitude", "Altitude"],
                     ["speed", "Speed"], ["pitch", "Gimbal pitch"], ["overlap", "Side overlap"],
                     ["yaw", "Heading"], ["angle", "Track angle"]
@@ -88,7 +88,7 @@ Rectangle {
         QGCLabel { text: qsTr("Camera"); visible: root.block.kind === "survey" }
         QGCComboBox {
             objectName: "cameraPresetSelector"
-            visible: root.block.kind === "survey" && !root.fleetMasterSource
+            visible: root.block.kind === "survey"
             enabled: !root.block.splitPart
             Layout.fillWidth: true; Layout.minimumWidth: 0
             model: root.block.cameraPresets
@@ -100,14 +100,14 @@ Rectangle {
         }
         QGCLabel {
             Layout.fillWidth: true; Layout.minimumWidth: 0; wrapMode: Text.WordWrap
-            visible: root.block.kind === "survey" && !root.fleetMasterSource && text.length > 0
+            visible: root.block.kind === "survey" && text.length > 0
             text: root.block.cameraPresets[root.block.cameraPreset].note || ""
             color: "orange"
         }
         SectionHeader {
             id: cameraHeader; objectName: "cameraSection"
             text: qsTr("Camera intrinsics"); checked: false
-            visible: root.block.kind === "survey" && !root.fleetMasterSource; Layout.fillWidth: true
+            visible: root.block.kind === "survey"; Layout.fillWidth: true
         }
         ColumnLayout {
             visible: cameraHeader.visible && cameraHeader.checked

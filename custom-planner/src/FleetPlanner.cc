@@ -17,6 +17,11 @@
 #include <limits>
 
 namespace {
+bool loadPlan(PlanMasterController* child, const QJsonObject& plan, QString& error) {
+    return child->missionController()->load(plan["mission"].toObject(),error)
+        && child->geoFenceController()->load(plan["geoFence"].toObject(),error)
+        && child->rallyPointController()->load(plan["rallyPoints"].toObject(),error);
+}
 QString color(int i) { return QStringList{"#00d8ef", "#ffb040", "#eb79c6", "#80d56b", "#a68cff", "#ff7865", "#d9d35b", "#73b5ff"}[i % 8]; }
 QList<ChimeraMissionItem*> blocks(PlanMasterController* plan) {
     QList<ChimeraMissionItem*> result;
@@ -32,20 +37,29 @@ FleetPlanner::FleetPlanner(QObject* parent) : QObject(parent)
     _syncTimer.setSingleShot(true); _syncTimer.setInterval(100);
     _previewTimer.setSingleShot(true); _previewTimer.setInterval(100);
     connect(&_syncTimer, &QTimer::timeout, this, &FleetPlanner::synchronize);
-    connect(&_previewTimer, &QTimer::timeout, this, [this] { watch(); emit changed(); });
+    connect(&_previewTimer, &QTimer::timeout, this, [this] { watch(); notify(); });
+}
+void FleetPlanner::notify()
+{
+    if (_publishedProfiles!=_profiles) { _publishedProfiles=_profiles; emit profilesChanged(); }
+    if (_publishedController!=activeController() || _publishedSelection!=_selected || _publishedEnabled!=enabled()) {
+        _publishedController=activeController(); _publishedSelection=_selected; _publishedEnabled=enabled();
+        emit controllersChanged();
+    }
+    emit changed();
 }
 void FleetPlanner::attach(PlanMasterController* master)
 {
     if (_master == master) return;
     clear(); _master = master;
-    if (master) connect(master->missionController(), &MissionController::visualItemsChanged, this, [this] { watch(); });
-    watch(); emit changed();
+    if (master) connect(master->missionController(), &MissionController::visualItemsChanged, this, [this] { _previewTimer.start(); });
+    watch(); notify();
 }
 void FleetPlanner::clear(bool immediate)
 {
     _selected = 0; _syncTimer.stop(); _previewTimer.stop();
-    auto children = _children; _children.clear(); _profiles.clear(); _error.clear();
-    emit changed();
+    auto children = _children; _children.clear(); _profiles.clear(); _archive = {}; _error.clear();
+    notify();
     for (auto* child : children) { if (immediate) delete child; else child->deleteLater(); }
 }
 PlanMasterController* FleetPlanner::makeChild()
@@ -54,12 +68,12 @@ PlanMasterController* FleetPlanner::makeChild()
     child->setFlyView(false);
     child->start(true);
     _children.append(child);
-    connect(child->missionController(), &MissionController::visualItemsChanged, this, [this] { watch(); });
+    connect(child->missionController(), &MissionController::visualItemsChanged, this, [this] { _previewTimer.start(); });
     return child;
 }
 bool FleetPlanner::owns(PlanMasterController* controller) const { return isMaster(controller) || _children.contains(controller); }
 PlanMasterController* FleetPlanner::activeController() const { return _selected > 0 && _selected <= _children.size() ? _children[_selected-1] : _master.data(); }
-void FleetPlanner::setSelected(int selected) { if (selected >= 0 && selected <= _children.size()) { _selected=selected; emit changed(); } }
+void FleetPlanner::setSelected(int selected) { if (selected != _selected && selected >= 0 && selected <= _children.size()) { _selected=selected; notify(); } }
 ChimeraMissionItem* FleetPlanner::domain() const {
     ChimeraMissionItem* result = nullptr;
     for (auto* b : blocks(_master)) if (b->kind() == "survey") { if (result) return nullptr; result=b; }
@@ -75,8 +89,10 @@ double FleetPlanner::separation() const {
     const double gap = (_maximum-_minimum)/(_profiles.size()-1);
     return _maximumGap > 0 ? std::min(gap,_maximumGap) : gap;
 }
-QList<QList<QGeoCoordinate>> FleetPlanner::regions(QString& error) const
+QList<QList<QGeoCoordinate>> FleetPlanner::regions(QString& error, int count) const
 {
+    if (count == 0) count = _profiles.size();
+    if (count < 2) return {};
     auto* source = domain();
     if (!source || !fiducial()) { error=tr("The master needs one Chimera survey and one shared fiducial."); return {}; }
     if (source->linkedSurvey() || source->splitPart() || !source->inspections().isEmpty()) { error=tr("Add survey interruptions in the drone views, not in the master area."); return {}; }
@@ -95,8 +111,8 @@ QList<QList<QGeoCoordinate>> FleetPlanner::regions(QString& error) const
     }
     SplitInput input; input.masterPolygon=polygon; input.center=center;
     auto cross = [](const QPointF& a, const QPointF& b) { return a.x()*b.y()-a.y()*b.x(); };
-    for (int i=0;i<_profiles.size();++i) {
-        const double angle = 2*M_PI*i/_profiles.size();
+    for (int i=0;i<count;++i) {
+        const double angle = 2*M_PI*i/count;
         const QPointF ray(std::sin(angle),std::cos(angle));
         double distance = std::numeric_limits<double>::infinity();
         for (int j=0;j<points.size();++j) {
@@ -107,10 +123,10 @@ QList<QList<QGeoCoordinate>> FleetPlanner::regions(QString& error) const
             if (along>0 && fraction>=0 && fraction<=1) distance=std::min(distance,along);
         }
         if (!std::isfinite(distance)) { error=tr("The region divider does not meet the area boundary."); return {}; }
-        input.edgePoints.append(center.atDistanceAndAzimuth(distance,360.*i/_profiles.size()));
+        input.edgePoints.append(center.atDistanceAndAzimuth(distance,360.*i/count));
     }
     const auto split=ControlPointSplitter().split(input,error);
-    if (split.size()!=_profiles.size()) { error=tr("The area could not be divided into one region per drone."); return {}; }
+    if (split.size()!=count) { error=tr("The area could not be divided into one region per drone."); return {}; }
     QList<QList<QGeoCoordinate>> result;
     for (const auto& region : split) result.append(region.polygon);
     return result;
@@ -119,7 +135,7 @@ QString FleetPlanner::create(QObject* object,int count,double minimum,double max
 {
     auto* source=qobject_cast<ChimeraMissionItem*>(object);
     if (!source || source->kind()!="survey" || count<2 || count>8) return tr("Select a survey and use 2 to 8 drones.");
-    if (enabled()) return tr("This master already has drone missions. Edit them from the fleet views.");
+    if (enabled()) return setCount(count);
     attach(source->masterController());
     if (!_master->controllerVehicle()->multiRotor()) return tr("Fleet planning currently supports multicopters.");
     if (domain()!=source || !fiducial()) return tr("The master needs one survey and one shared fiducial.");
@@ -131,7 +147,7 @@ QString FleetPlanner::create(QObject* object,int count,double minimum,double max
     auto home=_master->missionController()->plannedHomePosition();
     if (!home.isValid() || !std::isfinite(home.altitude())) return tr("Set the master launch location and elevation before creating drone missions.");
     for (int i=0;i<count;++i) _profiles.append(QVariantMap{{"name",QString("Drone %1").arg(i+1)}, {"color",color(i)},
-        {"heading",std::fmod(source->values()["yaw"].toDouble()+360.*i/count,360.)}, {"latitude",home.latitude()}, {"longitude",home.longitude()}});
+        {"automaticHeading",true}, {"heading",std::fmod(source->values()["yaw"].toDouble()+360.*i/count,360.)}, {"latitude",home.latitude()}, {"longitude",home.longitude()}});
     QString error; const auto polygons=regions(error);
     if (!error.isEmpty()) { _profiles.clear(); return error; }
     QScopedValueRollback<bool> guard(_updating,true);
@@ -152,13 +168,107 @@ QString FleetPlanner::create(QObject* object,int count,double minimum,double max
         auto* rtl=qobject_cast<SimpleMissionItem*>(mission->insertSimpleMissionItem(home,3+count));
         rtl->missionItem().setCommand(MAV_CMD_NAV_RETURN_TO_LAUNCH);
     }
-    _syncTimer.start(); watch(); _master->setDirty(true); emit changed(); return {};
+    _syncTimer.start(); watch(); _master->setDirty(true); notify(); return {};
+}
+void FleetPlanner::archive()
+{
+    for (int i=0; i<_children.size(); ++i) {
+        auto entry=_archive[QString::number(i)].toObject();
+        const auto plan=_children[i]->saveToJson().object();
+        auto regions=entry["regions"].toObject();
+        QJsonObject current;
+        QJsonArray prefix, suffix;
+        int region=-1;
+        bool tail=false;
+        for (const auto& value : plan["mission"].toObject()["items"].toArray()) {
+            const auto item=value.toObject();
+            if (item["fleetRegion"].toInt(-1)>=0) region=item["fleetRegion"].toInt();
+            if (item["command"].toInt()==MAV_CMD_NAV_RETURN_TO_LAUNCH) tail=true;
+            if (tail) suffix.append(value);
+            else if (region<0) prefix.append(value);
+            else {
+                const auto key=QString::number(region);
+                auto bundle=current[key].toArray(); bundle.append(value); current[key]=bundle;
+            }
+        }
+        // Empty active regions record deliberate deletions, rather than restoring older edits.
+        for (int r=0; r<_children.size(); ++r) regions[QString::number(r)]=current[QString::number(r)].toArray();
+        entry["regions"]=regions; entry["prefix"]=prefix; entry["suffix"]=suffix;
+        entry["profile"]=QJsonObject::fromVariantMap(_profiles[i].toMap()); entry["plan"]=plan;
+        _archive[QString::number(i)]=entry;
+    }
+}
+QString FleetPlanner::setCount(int count)
+{
+    if (!enabled() || count<2 || count>8) return tr("Use 2 to 8 drones.");
+    if (count==_children.size()) return {};
+    synchronize();
+    if (!_error.isEmpty()) return _error;
+    archive();
+    QScopedValueRollback<bool> guard(_updating,true);
+    const auto home=_master->missionController()->plannedHomePosition();
+    QVariantList profiles;
+    for (int i=0; i<count; ++i) {
+        auto profile=_archive[QString::number(i)].toObject()["profile"].toObject().toVariantMap();
+        if (profile.isEmpty()) profile=QVariantMap{{"name",QString("Drone %1").arg(i+1)},{"color",color(i)},
+            {"latitude",home.latitude()},{"longitude",home.longitude()},{"automaticHeading",true}};
+        if (profile.value("automaticHeading",false).toBool())
+            profile["heading"]=std::fmod(domain()->values()["yaw"].toDouble()+360.*i/count,360.);
+        profiles.append(profile);
+    }
+    QString error; const auto polygons=regions(error,count);
+    if (!error.isEmpty()) return error;
+    QJsonArray source; domain()->save(source);
+    QList<PlanMasterController*> replacement;
+    for (int i=0; i<count; ++i) {
+        auto entry=_archive[QString::number(i)].toObject();
+        if (entry.isEmpty()) {
+            entry=_archive["0"].toObject();
+            entry["regions"]=QJsonObject();
+            QJsonArray prefix;
+            for (const auto& value : entry["prefix"].toArray()) {
+                const auto item=value.toObject();
+                if (item["command"].toInt()==MAV_CMD_NAV_TAKEOFF || item["fleetRegion"].toInt(-1)==-2) prefix.append(value);
+            }
+            entry["prefix"]=prefix;
+            entry["suffix"]=QJsonArray{QJsonObject{{"type","SimpleItem"},{"command",MAV_CMD_NAV_RETURN_TO_LAUNCH},
+                {"frame",MAV_FRAME_MISSION},{"autoContinue",true},{"params",QJsonArray{0,0,0,0,0,0,0}},{"doJumpId",0}}};
+        }
+        auto plan=entry["plan"].toObject(); auto mission=plan["mission"].toObject();
+        auto items=entry["prefix"].toArray(); const auto stored=entry["regions"].toObject();
+        for (int phase=0; phase<count; ++phase) {
+            const int region=(i+phase)%count; const auto key=QString::number(region);
+            if (stored.contains(key)) {
+                for (const auto& item : stored[key].toArray()) items.append(item);
+            } else {
+                auto item=source.first().toObject(); item["fleetRegion"]=region; item["centerOut"]=true;
+                items.append(item);
+            }
+        }
+        for (const auto& item : entry["suffix"].toArray()) items.append(item);
+        mission["items"]=items; plan["mission"]=mission;
+        auto* child=new PlanMasterController(this); child->setFlyView(false); child->start(true);
+        replacement.append(child);
+        if (!loadPlan(child,plan,error)) break;
+    }
+    if (!error.isEmpty()) {
+        qDeleteAll(replacement); return error;
+    }
+    const auto previous=_children;
+    _children=replacement; _profiles=profiles;
+    _selected=std::min(_selected,count);
+    for (auto* child : _children) connect(child->missionController(),&MissionController::visualItemsChanged,this,[this] { _previewTimer.start(); });
+    _updating=false;
+    synchronize();
+    for (auto* child : previous) child->deleteLater();
+    return {};
 }
 void FleetPlanner::setLayers(double minimum,double maximum,double maximumGap)
 {
     if (!std::isfinite(minimum) || !std::isfinite(maximum) || !std::isfinite(maximumGap) || minimum<=0 || maximum<=minimum || maximumGap<0) {
-        _error=tr("Use positive altitude limits, maximum above minimum, and a nonnegative maximum gap."); emit changed(); return;
+        _error=tr("Use positive altitude limits, maximum above minimum, and a nonnegative maximum gap."); notify(); return;
     }
+    if (_minimum==minimum && _maximum==maximum && _maximumGap==maximumGap && _error.isEmpty()) return;
     _minimum=minimum; _maximum=maximum; _maximumGap=maximumGap; synchronize();
 }
 void FleetPlanner::setProfile(int drone,const QString& key,double value)
@@ -166,16 +276,16 @@ void FleetPlanner::setProfile(int drone,const QString& key,double value)
     if (drone<0 || drone>=_profiles.size() || !std::isfinite(value)) return;
     if ((key=="heading" && (value<0 || value>=360)) || (key=="latitude" && std::abs(value)>90) || (key=="longitude" && std::abs(value)>180)) return;
     if (!QStringList{"heading","latitude","longitude"}.contains(key)) return;
-    auto profile=_profiles[drone].toMap(); profile[key]=value; _profiles[drone]=profile; synchronize();
+    auto profile=_profiles[drone].toMap(); if (profile[key].toDouble()==value) return; if (key=="heading") profile["automaticHeading"]=false; profile[key]=value; _profiles[drone]=profile; synchronize();
 }
 void FleetPlanner::synchronize()
 {
     if (_updating || !enabled()) return;
     _syncTimer.stop(); QScopedValueRollback<bool> guard(_updating,true);
     _error.clear(); const auto polygons=regions(_error);
-    if (!_error.isEmpty()) { emit changed(); return; }
+    if (!_error.isEmpty()) { notify(); return; }
     const double homeAltitude=_master->missionController()->plannedHomePosition().altitude();
-    if (!std::isfinite(homeAltitude)) { _error=tr("Set a finite master launch elevation."); emit changed(); return; }
+    if (!std::isfinite(homeAltitude)) { _error=tr("Set a finite master launch elevation."); notify(); return; }
     for (int i=0;i<_children.size();++i) {
         auto profile=_profiles[i].toMap(); const double altitude=_minimum+i*separation(); profile["altitude"]=altitude; _profiles[i]=profile;
         auto* mission=_children[i]->missionController(); auto* items=mission->visualItems();
@@ -200,7 +310,7 @@ void FleetPlanner::synchronize()
             }
         }
     }
-    _master->setDirty(true); watch(); emit changed();
+    _master->setDirty(true); watch(); notify();
 }
 void FleetPlanner::watch()
 {
@@ -210,7 +320,7 @@ void FleetPlanner::watch()
         if (!items->property("fleetWatched").toBool()) {
             items->setProperty("fleetWatched",true);
             connect(items,&QmlObjectListModel::countChanged,this,[this,plan,items] {
-                if (_updating) return;
+                if (_updating || (plan!=_master && !_children.contains(plan))) return;
                 if (plan==_master && items->count()==1 && enabled()) { clear(); return; }
                 _previewTimer.start(); _syncTimer.start();
             });
@@ -219,7 +329,7 @@ void FleetPlanner::watch()
             auto* item=qobject_cast<VisualMissionItem*>(items->get(i));
             if (item->property("fleetWatched").toBool()) continue;
             item->setProperty("fleetWatched",true);
-            auto update=[this,plan] { if (_updating) return; if (_master && enabled()) _master->setDirty(true); if (!_syncTimer.isActive()) _syncTimer.start(); if (!_previewTimer.isActive()) _previewTimer.start(); };
+            auto update=[this,plan] { if (_updating || (plan!=_master && !_children.contains(plan))) return; if (_master && enabled()) _master->setDirty(true); if (!_syncTimer.isActive()) _syncTimer.start(); if (!_previewTimer.isActive()) _previewTimer.start(); };
             if (auto* simple=qobject_cast<SimpleMissionItem*>(item); simple && plan!=_master) {
                 connect(simple,&VisualMissionItem::coordinateChanged,this,[this,plan,simple] {
                     if (_updating || simple->missionItem().command()!=MAV_CMD_NAV_TAKEOFF) return;
@@ -296,9 +406,10 @@ void FleetPlanner::save(PlanMasterController* controller,QJsonObject& mission)
 {
     if (!isMaster(controller)) return;
     synchronize(); QJsonArray plans;
+    archive();
     for (auto* child : _children) plans.append(child->saveToJson().object());
     mission["chimeraFleet"]=QJsonObject{{"version",1},{"minimum",_minimum},{"maximum",_maximum},{"maximumGap",_maximumGap},
-        {"profiles",QJsonArray::fromVariantList(_profiles)},{"plans",plans}};
+        {"profiles",QJsonArray::fromVariantList(_profiles)},{"plans",plans},{"archive",_archive}};
 }
 void FleetPlanner::load(PlanMasterController* controller,const QJsonObject& plan)
 {
@@ -309,25 +420,35 @@ void FleetPlanner::load(PlanMasterController* controller,const QJsonObject& plan
     if (fleet.isEmpty()) { watch(); return; }
     const auto profiles=fleet["profiles"].toArray().toVariantList();
     const auto plans=fleet["plans"].toArray();
-    if (fleet["version"].toInt()!=1 || profiles.size()<2 || profiles.size()>8 || profiles.size()!=plans.size()) { _error=tr("Invalid fleet plan."); emit changed(); return; }
+    if (fleet["version"].toInt()!=1 || profiles.size()<2 || profiles.size()>8 || profiles.size()!=plans.size()) { _error=tr("Invalid fleet plan."); notify(); return; }
     for (const auto& value : profiles) {
         const auto p=value.toMap();
         if (!p.contains("heading") || !p.contains("latitude") || !p.contains("longitude") ||
             !std::isfinite(p["heading"].toDouble()) || p["heading"].toDouble()<0 || p["heading"].toDouble()>=360 ||
             !QGeoCoordinate(p["latitude"].toDouble(),p["longitude"].toDouble()).isValid()) {
-            _error=tr("Invalid drone heading or launch coordinate."); emit changed(); return;
+            _error=tr("Invalid drone heading or launch coordinate."); notify(); return;
         }
     }
-    _profiles=profiles; _minimum=fleet["minimum"].toDouble(); _maximum=fleet["maximum"].toDouble(); _maximumGap=fleet["maximumGap"].toDouble();
+    _archive=fleet["archive"].toObject();
+    _profiles=profiles;
+    if (auto* source=domain()) for (int i=0; i<_profiles.size(); ++i) {
+        auto profile=_profiles[i].toMap();
+        if (!profile.contains("automaticHeading")) {
+            const double expected=std::fmod(source->values()["yaw"].toDouble()+360.*i/_profiles.size(),360.);
+            profile["automaticHeading"]=std::abs(profile["heading"].toDouble()-expected)<1e-6;
+            _profiles[i]=profile;
+        }
+    }
+    _minimum=fleet["minimum"].toDouble(); _maximum=fleet["maximum"].toDouble(); _maximumGap=fleet["maximumGap"].toDouble();
     if (!std::isfinite(_minimum) || !std::isfinite(_maximum) || !std::isfinite(_maximumGap) || _minimum<=0 || _maximum<=_minimum || _maximumGap<0) {
-        _profiles.clear(); _error=tr("Invalid fleet altitude limits."); emit changed(); return;
+        _profiles.clear(); _error=tr("Invalid fleet altitude limits."); notify(); return;
     }
     QScopedValueRollback<bool> guard(_updating,true);
     for (const auto& value : plans) {
         auto* child=makeChild();
-        if (!child->missionController()->load(value.toObject()["mission"].toObject(),_error)) break;
+        if (!loadPlan(child,value.toObject(),_error)) break;
     }
-    watch(); emit changed();
+    watch(); notify();
 }
 QString FleetPlanner::exportDrone(int drone,const QString& filename)
 {

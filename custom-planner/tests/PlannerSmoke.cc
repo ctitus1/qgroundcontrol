@@ -294,6 +294,20 @@ void schedulePlannerSmoke(QQmlApplicationEngine* engine, ChimeraPlanner*)
             fleet.synchronize();
             check(childMission->visualItems()->count() == countBefore && region->cameraPreset() == 2 && region->values()["yaw"].toDouble() == 45, "Shared edits preserve drone inspection items and camera settings");
             check(fleet.validate().isEmpty(), fleet.validate());
+            for (int count : {2, 4, 3, 2, 3}) {
+                check(fleet.setCount(count).isEmpty(), "Change drone count without locking the master");
+                QEventLoop settle; QTimer::singleShot(300, &settle, &QEventLoop::quit); settle.exec();
+                check(fleet.drones().size() == count && fleet.validate().isEmpty(), fleet.validate());
+            }
+            fleet.setSelected(1);
+            childMission = fleet.activeController()->missionController();
+            region = qobject_cast<ChimeraMissionItem*>(childMission->visualItems()->get(3));
+            check(childMission->visualItems()->count() == countBefore && region->cameraPreset() == 2 && region->linkedSurvey(), "Count changes preserve splits, inspection items, and camera overrides");
+            check(fleet.drones()[0].toMap()["heading"].toDouble() == 45 && fleet.drones()[1].toMap()["heading"].toDouble() == 120, "Count changes preserve custom headings and redistribute default headings");
+            fleet.setSelected(3);
+            auto* archivedRegion = qobject_cast<ChimeraMissionItem*>(fleet.activeController()->missionController()->visualItems()->get(3));
+            archivedRegion->setValue("speed", 2.5);
+            check(fleet.setCount(2).isEmpty(), "Archive a removed drone before save");
             auto fleetJson = fleetMaster.saveToJson().object();
             auto fleetMissionJson = fleetJson["mission"].toObject();
             fleet.save(&fleetMaster, fleetMissionJson); fleetJson["mission"] = fleetMissionJson;
@@ -301,6 +315,10 @@ void schedulePlannerSmoke(QQmlApplicationEngine* engine, ChimeraPlanner*)
             check(restoredFleet.missionController()->load(fleetMissionJson, error), error);
             fleet.attach(&restoredFleet); fleet.load(&restoredFleet, fleetJson);
             check(fleet.enabled() && fleet.validate().isEmpty(), "Master restores all drone missions");
+            check(fleet.setCount(3).isEmpty(), "Restore an archived drone after reload");
+            fleet.setSelected(3);
+            archivedRegion = qobject_cast<ChimeraMissionItem*>(fleet.activeController()->missionController()->visualItems()->get(3));
+            check(archivedRegion->values()["speed"].toDouble() == 2.5, "Saved archive preserves removed drone settings");
             fleet.setSelected(1);
             check(fleet.activeController()->missionController()->visualItems()->count() == countBefore, "Master preserves manual drone mission items");
             check(fleet.exportDrone(0, "/tmp/qgc-fleet-drone.plan").isEmpty(), "Export a single drone plan");
@@ -340,6 +358,26 @@ void schedulePlannerSmoke(QQmlApplicationEngine* engine, ChimeraPlanner*)
             liveMission->setCurrentPlanViewSeqNum(qobject_cast<VisualMissionItem*>(liveMission->visualItems()->get(3))->sequenceNumber(),true);
             QTimer::singleShot(250,&viewEvents,&QEventLoop::quit); viewEvents.exec();
             mainWindow->grabWindow().save("/tmp/qgc-fleet-drone.png");
+            for (int repeat=0; repeat<4; ++repeat) {
+                auto* active = liveFleet->activeController()->missionController();
+                auto* part = qobject_cast<ChimeraMissionItem*>(active->visualItems()->get(3));
+                check(part->addSplitPoint(part->splitHandles().first().value<QGeoCoordinate>()).isEmpty(), "Split with the native editor open");
+                QTimer::singleShot(150,&viewEvents,&QEventLoop::quit); viewEvents.exec();
+                check(part->removeEndSplit().isEmpty(), "Remove split with the native editor open");
+                liveFleet->setLayers(30 + repeat, 60 + repeat, 10);
+                QTimer::singleShot(150,&viewEvents,&QEventLoop::quit); viewEvents.exec();
+            }
+            for (int count : {2, 3, 4, 2, 3}) {
+                check(liveFleet->setCount(count).isEmpty(), "Change count with the native drone editor visible");
+                QTimer::singleShot(300,&viewEvents,&QEventLoop::quit); viewEvents.exec();
+                check(liveFleet->validate().isEmpty(),liveFleet->validate());
+            }
+            QTimer::singleShot(3000,&viewEvents,&QEventLoop::quit); viewEvents.exec();
+            auto* fleetSettings=mainWindow->findChild<QObject*>("fleetSettings");
+            check(fleetSettings && QMetaObject::invokeMethod(fleetSettings,"open"),"Open fleet settings in the native editor");
+            QTimer::singleShot(150,&viewEvents,&QEventLoop::quit); viewEvents.exec();
+            mainWindow->grabWindow().save("/tmp/qgc-fleet-settings.png");
+            check(QMetaObject::invokeMethod(fleetSettings,"close"),"Close fleet settings");
             liveMaster->saveToFile("/tmp/qgc-fleet-native-save.plan");
             check(liveFleet->activeController()!=liveMaster,"Native editor switches to the selected drone");
             qInfo() << "PLANNER_SMOKE_PASS: blocks, no-gimbal markers, linked split edit/remove/resume, persistence, Fact panels, map handles";

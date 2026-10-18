@@ -26,8 +26,8 @@ MapItemView {
         z:          QGroundControl.zOrderWaypointLines
         path:       _calcMissionLinePath()
 
-        property bool _terrainCollision:    object && object.terrainCollision
-        property bool _showSpecialVisual:   object && showSpecialVisual && object.specialVisual
+        property bool _terrainCollision:    !!(object && object.terrainCollision)
+        property bool _showSpecialVisual:   !!(object && showSpecialVisual && object.specialVisual)
 
         readonly property real _maxSegmentLengthM: 50000 // 50 km
 
