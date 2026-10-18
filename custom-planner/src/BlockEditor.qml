@@ -40,15 +40,6 @@ Rectangle {
             text: root.fleetMasterSource ? qsTr("Edit the shared area and defaults for new regions here. Edit existing regions in drone views. Use Fleet setup for headings and altitude layers.") : root.block.kind === "survey" ? (root.block.linkedSurvey ? qsTr("Edits apply to the whole linked survey.") : qsTr("The polygon defines the ground area to cover.")) :
                   root.block.kind === "vantage" ? qsTr("Delay until 1 s arms vantage autonomy. 5g_drone controls the gimbal.") : qsTr("5g_drone controls the gimbal. Delay until is separate from waypoint hold time.")
         }
-        ColumnLayout {
-            visible: root.block.kind === "survey" && !root.fleetMasterSource
-            Layout.fillWidth: true
-            QGCButton { text: qsTr("Add building ROI / orbit"); Layout.fillWidth: true; onClicked: chimeraPlanner.beginInspection(root.block) }
-            QGCLabel { text: chimeraPlanner.placementPrompt; visible: chimeraPlanner.placementSource === root.block; Layout.fillWidth: true; wrapMode: Text.WordWrap }
-            QGCButton { text: qsTr("Cancel placement"); visible: chimeraPlanner.placementSource === root.block; Layout.fillWidth: true; onClicked: chimeraPlanner.cancelPlacement() }
-            QGCCheckBox { text: qsTr("Show survey detail"); checked: chimeraPlanner.showSurveyDetails; onClicked: chimeraPlanner.showSurveyDetails = checked }
-            QGCCheckBox { text: qsTr("Show other routes"); checked: chimeraPlanner.showContext; onClicked: chimeraPlanner.showContext = checked }
-        }
         SectionHeader { id: flightHeader; text: root.fleetMasterSource ? qsTr("Search area") : qsTr("Flight"); Layout.fillWidth: true }
         ColumnLayout {
             visible: flightHeader.checked
@@ -164,9 +155,8 @@ Rectangle {
             QGCLabel {
                 Layout.fillWidth: true; Layout.minimumWidth: 0; wrapMode: Text.WordWrap
                 font.pointSize: ScreenTools.smallFontPointSize
-                text: qsTr("Choose a split point on the route, then insert normal QGC mission items between the parts. Drag the split marker to move the interruption.")
+                text: qsTr("Click + on a flight leg to add a split. Drag the split marker along the route to move it. Insert normal mission items between the survey parts.")
             }
-            QGCButton { text: qsTr("Choose split point on map"); Layout.fillWidth: true; onClicked: chimeraPlanner.beginSplit(root.block) }
             QGCButton {
                 visible: root.block.hasEndSplit
                 text: qsTr("Remove end split"); Layout.fillWidth: true

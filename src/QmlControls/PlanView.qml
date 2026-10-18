@@ -43,14 +43,6 @@ Item {
 
     readonly property var _fleet: typeof chimeraFleet !== "undefined" ? chimeraFleet : null
     property var    _planMasterController:              _fleet && _fleet.activeController ? _fleet.activeController : planMasterController
-    on_PlanMasterControllerChanged: if (typeof chimeraPlanner !== "undefined") chimeraPlanner.cancelPlacement()
-    Connections {
-        target: _missionController
-        function onCurrentPlanViewItemChanged() {
-            if (typeof chimeraPlanner !== "undefined" && chimeraPlanner.placementSource && chimeraPlanner.placementSource !== _missionController.currentPlanViewItem)
-                chimeraPlanner.cancelPlacement()
-        }
-    }
     property var    _missionController:                 _planMasterController.missionController
     property var    _geoFenceController:                _planMasterController.geoFenceController
     property var    _rallyPointController:              _planMasterController.rallyPointController
@@ -405,7 +397,6 @@ Item {
                     return
                 }
                 var coordinate = editorMap.toCoordinate(Qt.point(mouse.x, mouse.y), false /* clipToViewPort */)
-                if (typeof chimeraPlanner !== "undefined" && chimeraPlanner.handleMapClick(coordinate, _planMasterController)) return
                 coordinate.latitude = coordinate.latitude.toFixed(_decimalPlaces)
                 coordinate.longitude = coordinate.longitude.toFixed(_decimalPlaces)
                 coordinate.altitude = coordinate.altitude.toFixed(_decimalPlaces)

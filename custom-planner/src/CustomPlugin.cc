@@ -75,7 +75,7 @@ QString CustomPlugin::missionUploadError(PlanMasterController* controller) const
 
 ComplexMissionItem* CustomPlugin::createComplexMissionItem(const QString& type, PlanMasterController* controller, bool flyView)
 {
-    const QStringList kinds{"fiducial", "survey", "vantage", "inspection"};
+    const QStringList kinds{"fiducial", "survey", "vantage"};
     for (const auto& kind : kinds) {
         if (type == "chimera-" + kind || type == "Chimera " + kind) {
             return new ChimeraMissionItem(controller, flyView, kind, &_planner);
@@ -86,5 +86,5 @@ ComplexMissionItem* CustomPlugin::createComplexMissionItem(const QString& type, 
 
 QStringList CustomPlugin::complexMissionItemNames(Vehicle*, const QStringList& names)
 {
-    return QStringList{"Chimera fiducial", "Chimera survey", "Chimera vantage", "Chimera inspection"} + names;
+    return QStringList{"Chimera fiducial", "Chimera survey", "Chimera vantage"} + names;
 }

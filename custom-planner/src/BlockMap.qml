@@ -56,9 +56,9 @@ Item {
     }
     function refresh() {
         used = ({})
-        if (!masterDomain && (block.isCurrentItem || chimeraPlanner.showContext)) add(line, { path: block.route })
-        if (block.kind === "survey" && (block.isCurrentItem || chimeraPlanner.showContext)) add(marker, { coordinate: block.coordinate, label: block.abbreviation, routePoint: -1 })
-        if (block.isCurrentItem && block.kind === "survey" && !masterDomain && chimeraPlanner.showSurveyDetails) {
+        if (!masterDomain) add(line, { path: block.route })
+        if (block.kind === "survey") add(marker, { coordinate: block.coordinate, label: block.abbreviation, routePoint: -1 })
+        if (block.isCurrentItem && block.kind === "survey" && !masterDomain) {
             for (var corners of (block.preview.footprints || [])) add(footprint, {path: corners})
             var path = block.preview.path || []
             for (var i = 0; i < path.length; ++i) add(marker, {coordinate: path[i], label: "", routePoint: i})
@@ -69,12 +69,6 @@ Item {
                 }
             }
         }
-        if (block.kind === "inspection") {
-            add(marker, {coordinate: block.centerCoordinate, label: block.inspectionName, routePoint: -1})
-            if (block.isCurrentItem) add(marker, {coordinate: block.coordinate, label: "Entry", routePoint: -1})
-        }
-        if (chimeraPlanner.placementSource === block && chimeraPlanner.pauseCoordinate.isValid)
-            add(marker, {coordinate: chimeraPlanner.pauseCoordinate, label: "Pause", routePoint: -1})
         trim()
     }
     Component.onCompleted: refresh()
@@ -85,12 +79,11 @@ Item {
         function onTranslated(distance, azimuth) { timer.stop(); root.translate(distance, azimuth) }
         function onIsCurrentItemChanged() { timer.restart() }
     }
-    Connections { target: chimeraPlanner; function onDisplayChanged() { timer.restart() } }
     Connections { target: chimeraFleet; function onChanged() { if (!timer.running) timer.start() } }
     Timer { id: timer; interval: 50; onTriggered: root.refresh() }
     Loader {
         id: pointLoader
-        active: root.block.kind !== "survey" && root.block.kind !== "inspection"
+        active: root.block.kind !== "survey"
         sourceComponent: Component {
             MissionItemIndicator {
                 coordinate: root.block.coordinate
@@ -103,40 +96,13 @@ Item {
         onLoaded: { item.parent = root.map; root.map.addMapItem(item) }
     }
     Loader {
-        active: root.block.kind !== "survey" && root.block.kind !== "inspection" && root.block.fleetRegion === -1 && root.block.isCurrentItem && root.interactive && pointLoader.item !== null
+        active: root.block.kind !== "survey" && root.block.fleetRegion === -1 && root.block.isCurrentItem && root.interactive && pointLoader.item !== null
         sourceComponent: Component {
             MissionItemIndicatorDrag {
                 mapControl: root.map
                 itemIndicator: pointLoader.item
                 itemCoordinate: root.block.coordinate
                 onItemCoordinateChanged: root.block.coordinate = itemCoordinate
-            }
-        }
-        onLoaded: item.parent = root.map
-    }
-    Loader {
-        id: roiHandle
-        active: root.block.kind === "inspection" && root.block.isCurrentItem
-        sourceComponent: Component {
-            MapQuickItem {
-                coordinate: root.block.centerCoordinate
-                anchorPoint.x: 12; anchorPoint.y: 12
-                z: QGroundControl.zOrderMapItems + 4
-                sourceItem: Rectangle { width: 24; height: 24; radius: 12; color: "#eb79c6"; border.color: "white"; border.width: 2 }
-                Component.onDestruction: root.map.removeMapItem(this)
-            }
-        }
-        onLoaded: { item.parent = root.map; root.map.addMapItem(item) }
-    }
-    Loader {
-        active: roiHandle.item !== null && root.interactive
-        sourceComponent: Component {
-            MissionItemIndicatorDrag {
-                property bool dragging: false
-                mapControl: root.map; itemIndicator: roiHandle.item; itemCoordinate: root.block.centerCoordinate
-                onDragStart: dragging = true
-                onDragStop: { dragging = false; root.block.coordinate = itemCoordinate }
-                onItemCoordinateChanged: if (dragging && itemIndicator) itemIndicator.coordinate = itemCoordinate
             }
         }
         onLoaded: item.parent = root.map
@@ -189,18 +155,14 @@ Item {
             sourceItem: SplitIndicator { onClicked: root.report(root.block.addSplitPoint(handle.coordinate)) }
         }
     }
-    Loader {
-        active: root.block.kind === "survey" && (root.block.isCurrentItem || chimeraPlanner.showContext)
-        sourceComponent: Component {
-            QGCMapPolygonVisuals {
-                mapControl: root.map
-                mapPolygon: root.block.surveyAreaPolygon
-                interactive: root.interactive && root.block.isCurrentItem && !root.block.splitPart && root.block.fleetRegion === -1
-                borderWidth: 2; borderColor: "white"; interiorColor: "#2080ff"; interiorOpacity: 0.15
-            }
-        }
+    QGCMapPolygonVisuals {
+        mapControl: root.map
+        mapPolygon: root.block.surveyAreaPolygon
+        interactive: root.interactive && root.block.isCurrentItem && root.block.kind === "survey" && !root.block.splitPart && root.block.fleetRegion === -1
+        visible: root.block.kind === "survey"
+        borderWidth: 2; borderColor: "white"; interiorColor: "#2080ff"; interiorOpacity: 0.15
     }
-    Component { id: line; MapPolyline { z: QGroundControl.zOrderMapItems + 1; line.color: root.block.kind === "inspection" ? "#eb79c6" : root.block.isCurrentItem ? "#00d8ef" : "#707070"; line.width: root.block.isCurrentItem ? 4 : 2 } }
+    Component { id: line; MapPolyline { z: QGroundControl.zOrderMapItems + 1; line.color: root.block.isCurrentItem ? "#00d8ef" : "white"; line.width: root.block.isCurrentItem ? 4 : 2 } }
     Component { id: footprint; MapPolygon { z: QGroundControl.zOrderMapItems; color: "#10ffb040"; border.color: "#ffb040"; border.width: 1 } }
     Component {
         id: marker
@@ -216,7 +178,6 @@ Item {
                 id: indicator
                 label: routeMarker.label
                 index: routeMarker.routePoint >= 0 ? routeMarker.routePoint + 1 : -1
-                small: routeMarker.label.length < 2
                 checked: routeMarker.selected
                 highlightSelected: true
                 onClicked: {

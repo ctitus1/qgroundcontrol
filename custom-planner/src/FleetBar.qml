@@ -195,22 +195,6 @@ Rectangle {
                     }
                 }
                 QGCLabel { Layout.fillWidth: true; wrapMode: Text.WordWrap; text: qsTr("Export all saves <name>.plan as the master and <name>-uasN.plan for each aircraft.") }
-                SectionHeader { id: inspectionsHeader; text: qsTr("Planned inspections (%1)").arg(chimeraFleet.inspectionSummary.length); Layout.fillWidth: true }
-                Repeater {
-                    model: inspectionsHeader.checked ? chimeraFleet.inspectionSummary : []
-                    delegate: QGCButton {
-                        required property var modelData
-                        text: modelData.aircraft + " / R" + modelData.region + ": " + modelData.name
-                        Layout.fillWidth: true
-                        onClicked: {
-                            const sequence = modelData.sequence
-                            const drone = modelData.drone
-                            chimeraFleet.selected = drone + 1
-                            chimeraFleet.activeController.missionController.setCurrentPlanViewSeqNum(sequence, true)
-                            settings.close()
-                        }
-                    }
-                }
                 QGCLabel { text: chimeraFleet.error; visible: text.length > 0; Layout.fillWidth: true; wrapMode: Text.WordWrap; color: "orange" }
                 QGCButton { text: qsTr("Close"); onClicked: settings.close() }
             }

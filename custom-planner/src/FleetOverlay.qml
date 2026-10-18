@@ -46,8 +46,8 @@ Item {
             markers[i].title = paths[i].name
             markers[i].tint = paths[i].color
             markers[i].drone = paths[i].drone
-            markers[i].visible = (chimeraFleet.selected === 0 || chimeraPlanner.showContext) && (paths[i].drone === 0 || chimeraFleet.showRoutes)
-            fills[i].visible = paths[i].drone === 0 && (chimeraFleet.selected === 0 || chimeraPlanner.showContext)
+            markers[i].visible = paths[i].drone === 0 || chimeraFleet.showRoutes
+            fills[i].visible = paths[i].drone === 0
             fills[i].path = paths[i].drone === 0 ? paths[i].path : []
             fills[i].color = paths[i].color
             lines[i].path = paths[i].path
@@ -56,11 +56,10 @@ Item {
             lines[i].line.color = paths[i].color
             lines[i].line.width = chimeraFleet.selected === 0 ? 3 : 2
             lines[i].opacity = chimeraFleet.selected === 0 ? 0.9 : 0.3
-            lines[i].visible = (chimeraFleet.selected === 0 || chimeraPlanner.showContext) && (paths[i].drone === 0 || (chimeraFleet.showRoutes && chimeraFleet.selected !== paths[i].drone))
+            lines[i].visible = paths[i].drone === 0 || (chimeraFleet.showRoutes && chimeraFleet.selected !== paths[i].drone)
         }
         refreshControls()
     }
-    Connections { target: chimeraPlanner; function onDisplayChanged() { refreshTimer.restart() } }
     onMapChanged: refresh()
     Connections {
         target: chimeraFleet

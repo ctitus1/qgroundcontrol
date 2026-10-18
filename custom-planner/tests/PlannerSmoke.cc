@@ -30,11 +30,11 @@ void check(bool passed, const QString& message)
     if (!passed) throw std::runtime_error(message.toStdString());
 }
 }
-void schedulePlannerSmoke(QQmlApplicationEngine* engine, ChimeraPlanner* planner)
+void schedulePlannerSmoke(QQmlApplicationEngine* engine, ChimeraPlanner*)
 {
     if (!qEnvironmentVariableIsSet("QGC_PLANNER_SMOKE")) return;
     SettingsManager::instance()->appSettings()->firstRunPromptIdsShown()->setRawValue("1,2");
-    QTimer::singleShot(2500, engine, [engine, planner] {
+    QTimer::singleShot(2500, engine, [engine] {
         try {
             PlanMasterController plan; plan.start();
             auto* mission = plan.missionController();
@@ -261,50 +261,6 @@ void schedulePlannerSmoke(QQmlApplicationEngine* engine, ChimeraPlanner* planner
             auto* invalidSurvey = qobject_cast<ChimeraMissionItem*>(mission->insertComplexMissionItem("Chimera survey", origin, 8));
             invalidSurvey->setValue("pitch", -5);
             check(invalidSurvey->readyForSaveState() == VisualMissionItem::NotReadyForSaveData, "Invalid geometry blocked");
-            PlanMasterController inspectionMaster; inspectionMaster.setFlyView(false); inspectionMaster.start(true);
-            auto* inspectionMission=inspectionMaster.missionController();
-            inspectionMission->insertTakeoffItem(origin,1);
-            inspectionMission->insertComplexMissionItem("Chimera fiducial",origin,2);
-            auto* inspectionSurvey=qobject_cast<ChimeraMissionItem*>(inspectionMission->insertComplexMissionItem("Chimera survey",origin,3));
-            inspectionSurvey->setValue("yaw",23);
-            const auto pause=inspectionSurvey->splitHandles().first().value<QGeoCoordinate>();
-            planner->beginInspection(inspectionSurvey);
-            check(planner->handleMapClick(pause,&inspectionMaster),"Choose an inspection pause on the route");
-            check(planner->handleMapClick(origin.atDistanceAndAzimuth(15,90),&inspectionMaster),"Place the building ROI");
-            auto* orbit=qobject_cast<ChimeraMissionItem*>(inspectionMission->visualItems()->get(4));
-            auto* resume=qobject_cast<ChimeraMissionItem*>(inspectionMission->visualItems()->get(5));
-            check(orbit && orbit->kind()=="inspection" && resume && resume->linkedSurvey(),"Insert one inspection between linked survey parts");
-            orbit->setInspectionName("Building A roof"); orbit->setValue("radius",30); orbit->setValue("arc",180); orbit->setValue("clockwise",0); orbit->setValue("targetHeight",10);
-            commands.clear(); orbit->appendMissionItems(commands,&owner);
-            check(commands.size()==17 && commands[2]->command()==MAV_CMD_DO_SET_ROI_LOCATION && commands[2]->param7()==10 && commands.last()->command()==MAV_CMD_DO_SET_ROI_NONE,"Orbit command order and separate ROI height");
-            for (auto* command : commands) {
-                check(command->command()!=MAV_CMD_DO_MOUNT_CONTROL && command->command()!=MAV_CMD_NAV_DELAY,"Inspection does not send gimbal or autonomy mode commands");
-                if (command->command()==MAV_CMD_NAV_WAYPOINT)
-                    check(std::abs(QGeoCoordinate(command->param5(),command->param6()).distanceTo(orbit->centerCoordinate())-30)<0.01,"Custom orbit radius");
-            }
-            commands.clear(); resume->appendMissionItems(commands,&owner);
-            bool armed=false;
-            for (auto* command : commands) {
-                if (command->command()==MAV_CMD_NAV_DELAY && command->param1()==0) armed=true;
-                if (command->command()==MAV_CMD_NAV_WAYPOINT) check(command->param4()==23,"Survey resumes its original aircraft heading");
-            }
-            check(armed && inspectionSurvey->linkedSurveyError().isEmpty(),"Resume re-arms the intact linked survey: " + inspectionSurvey->linkedSurveyError() + " / " + resume->error() + QString(" armed=%1 commands=%2").arg(armed).arg(commands.size()));
-            check(orbit->insertOrbit({},origin.atDistanceAndAzimuth(25,90)).isEmpty(),"Add a second ROI before survey resume");
-            const auto inspectionJson=inspectionMaster.saveToJson().object()["mission"].toObject();
-            check(inspectionMission->load(inspectionJson,error),error);
-            orbit=qobject_cast<ChimeraMissionItem*>(inspectionMission->visualItems()->get(4));
-            check(orbit->inspectionName()=="Building A roof" && orbit->values()["arc"].toDouble()==180,"Inspection name and orbit settings persist");
-            context.setContextProperty("missionItem",orbit); context.setContextProperty("availableWidth",240);
-            QQmlComponent inspectionEditor(engine,QUrl("qrc:/Planner/InspectionEditor.qml"));
-            check(inspectionEditor.isReady(),inspectionEditor.errorString());
-            auto* inspectionPanel=inspectionEditor.create(&context); check(inspectionPanel,inspectionEditor.errorString()); delete inspectionPanel;
-            commands.clear(); orbit->appendMissionItems(commands,&owner); const int orbitCommands=commands.size();
-            check(orbit->expandInspection().isEmpty(),"Convert an orbit to editable native QGC waypoints");
-            for (int i=0;i<orbitCommands;++i) {
-                QList<MissionItem*> expanded;
-                qobject_cast<VisualMissionItem*>(inspectionMission->visualItems()->get(4+i))->appendMissionItems(expanded,&owner);
-                check(expanded.size()==1 && expanded[0]->command()==commands[i]->command(),"Native expansion preserves command order");
-            }
             PlanMasterController fleetMaster; fleetMaster.setFlyView(false); fleetMaster.start(true);
             auto* fleetMission = fleetMaster.missionController();
             fleetMission->insertTakeoffItem(origin, 1);
@@ -421,10 +377,17 @@ void schedulePlannerSmoke(QQmlApplicationEngine* engine, ChimeraPlanner* planner
                 auto middle=testCenter.atDistanceAndAzimuth(std::abs(x),x<0?270:90);
                 testLegs.append({middle.atDistanceAndAzimuth(40,180),middle.atDistanceAndAzimuth(40,0)});
             }
-            const auto passes=CenterOut::passes(testLegs,testCenter,10,0);
-            double length=0; int previousRing=-1;
-            for (const auto& pass : passes) { check(pass.ring>=previousRing,"Inner bands precede outer bands"); previousRing=pass.ring; length+=pass.start.distanceTo(pass.end); }
-            check(std::abs(length-240)<0.1,"Center-first subdivision preserves all survey tracks");
+            const auto passes=CenterOut::passes(testLegs,testCenter,0);
+            check(passes.size()==testLegs.size(),"Center-out keeps complete tracks");
+            double length=0, previousOffset=-1, previousDirection=0;
+            for (const auto& pass : passes) {
+                check(std::abs(pass.across)>=previousOffset,"Center tracks precede outer tracks");
+                const double direction=std::cos(pass.start.azimuthTo(pass.end)*M_PI/180);
+                if (previousDirection) check(direction*previousDirection<0,"Successive tracks zigzag in opposite directions");
+                previousDirection=direction; previousOffset=std::abs(pass.across);
+                length+=pass.start.distanceTo(pass.end);
+            }
+            check(std::abs(length-240)<0.1,"Center-out preserves full survey coverage");
             QFile masterFile("/tmp/qgc-fleet-master.plan"); check(masterFile.open(QIODevice::WriteOnly),"Write fleet fixture");
             masterFile.write(QJsonDocument(fleetJson).toJson()); masterFile.close();
             auto* liveFleet=qobject_cast<FleetPlanner*>(engine->rootContext()->contextProperty("chimeraFleet").value<QObject*>());
@@ -460,21 +423,7 @@ void schedulePlannerSmoke(QQmlApplicationEngine* engine, ChimeraPlanner* planner
                 QTimer::singleShot(300,&viewEvents,&QEventLoop::quit); viewEvents.exec();
                 check(liveFleet->validate().isEmpty(),liveFleet->validate());
             }
-            auto* inspectionActive=liveFleet->activeController()->missionController();
-            auto* inspectionRegion=qobject_cast<ChimeraMissionItem*>(inspectionActive->visualItems()->get(3));
-            check(inspectionRegion->insertOrbit(inspectionRegion->splitHandles().first().value<QGeoCoordinate>(),inspectionRegion->centerCoordinate()).isEmpty(),"Insert inspection in the native fleet editor");
-            auto* liveOrbit=qobject_cast<ChimeraMissionItem*>(inspectionActive->visualItems()->get(4));
-            liveOrbit->setInspectionName("Building A roof");
-            check(liveFleet->inspectionSummary().size()==1,"Master lists the building inspection");
-            check(liveFleet->setCount(2).isEmpty() && liveFleet->setCount(3).isEmpty(),"Resize fleet with a building inspection");
-            check(liveFleet->inspectionSummary().size()==1,"Fleet resize preserves inspections");
-            const auto entry=liveFleet->inspectionSummary().first().toMap();
-            liveFleet->setSelected(entry["drone"].toInt()+1);
-            liveFleet->activeController()->missionController()->setCurrentPlanViewSeqNum(entry["sequence"].toInt(),true);
-            mainWindow->resize(1360,900);
-            QTimer::singleShot(1000,&viewEvents,&QEventLoop::quit); viewEvents.exec();
-            check(liveFleet->validate().isEmpty(),liveFleet->validate());
-            mainWindow->grabWindow().save("/tmp/qgc-inspection-view.png");
+            QTimer::singleShot(3000,&viewEvents,&QEventLoop::quit); viewEvents.exec();
             auto* fleetSettings=mainWindow->findChild<QObject*>("fleetSettings");
             check(fleetSettings && QMetaObject::invokeMethod(fleetSettings,"open"),"Open fleet settings in the native editor");
             QTimer::singleShot(150,&viewEvents,&QEventLoop::quit); viewEvents.exec();

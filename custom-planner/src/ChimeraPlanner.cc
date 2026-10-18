@@ -1,7 +1,5 @@
 #include <memory>
 #include "ChimeraPlanner.h"
-#include "ChimeraMissionItem.h"
-#include "QGCApplication.h"
 #include "CameraCalc.h"
 #include "MissionController.h"
 #include "MissionItem.h"
@@ -139,12 +137,8 @@ bool ChimeraPlanner::buildSurvey(SurveyComplexItem* source, QList<MissionItem*>&
         auto* grid = dynamic_cast<PlannerSurvey*>(&generated);
         if (!grid) { error = tr("Center-first survey grid is unavailable."); return false; }
         const auto center = generated.surveyAreaPolygon()->center();
-        double radius = 0;
-        for (const auto& vertex : generated.surveyAreaPolygon()->coordinateList()) radius = std::max(radius, center.distanceTo(vertex));
-        const double band = std::max(0.5, std::min(std::max(5., shape.spacing * 2), radius / 4));
-        if (radius / band > 2000) { error = tr("The survey is too long for center-first passes. Reduce the area."); return false; }
-        const auto passes = CenterOut::passes(grid->legs(), center, band, source->gridAngle()->rawValue().toDouble());
-        if (passes.size() > 2000) { error = tr("Center-first survey exceeds 2000 passes. Increase spacing or reduce the area."); return false; }
+        const auto passes = CenterOut::passes(grid->legs(), center, source->gridAngle()->rawValue().toDouble());
+        if (passes.size() > 2000) { error = tr("Center-first survey exceeds 2000 tracks. Increase spacing or reduce the area."); return false; }
         auto waypoint = [&](const QGeoCoordinate& c) {
             items.append(new MissionItem(0, MAV_CMD_NAV_WAYPOINT, MAV_FRAME_GLOBAL_RELATIVE_ALT, 0,0,0,0,
                 c.latitude(), c.longitude(), source->cameraCalc()->distanceToSurface()->rawValue().toDouble(), true,false,owner));
@@ -289,35 +283,4 @@ void ChimeraPlanner::loadSettings(PlanMasterController* controller, const QJsonO
             emit settingsChanged(survey);
         }
     }
-}
-
-QString ChimeraPlanner::placementPrompt() const
-{
-    if (!_placementSource) return {};
-    return _placementMode=="target" ? tr("Click the building or ROI on the map.") : tr("Click the survey route where the inspection should start.");
-}
-void ChimeraPlanner::beginInspection(QObject* source)
-{
-    auto* block=qobject_cast<ChimeraMissionItem*>(source);
-    if (!block || (block->kind()!="survey" && block->kind()!="inspection")) return;
-    _placementSource=source; _pause={}; _placementMode=block->kind()=="inspection"?"target":"pause"; emit displayChanged();
-}
-void ChimeraPlanner::beginSplit(QObject* source)
-{
-    _placementSource=source; _pause={}; _placementMode="split"; emit displayChanged();
-}
-void ChimeraPlanner::cancelPlacement()
-{
-    _placementSource.clear(); _pause={}; _placementMode.clear(); emit displayChanged();
-}
-bool ChimeraPlanner::handleMapClick(const QGeoCoordinate& coordinate,QObject* controller)
-{
-    auto* block=qobject_cast<ChimeraMissionItem*>(_placementSource.data());
-    if (!block) return false;
-    if (block->masterController()!=controller) { cancelPlacement(); return false; }
-    if (_placementMode=="pause") { _pause=block->nearestRoutePoint(coordinate); _placementMode="target"; emit displayChanged(); return true; }
-    const auto mode=_placementMode; const auto pause=_pause; cancelPlacement();
-    const auto error=mode=="split" ? block->addSplitPoint(coordinate) : block->insertOrbit(pause,coordinate);
-    if (!error.isEmpty()) qgcApp()->showAppMessage(error);
-    return true;
 }

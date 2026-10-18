@@ -410,7 +410,7 @@ void FleetPlanner::synchronize()
             } else if (block->fleetRegion()>=0 && block->fleetRegion()<polygons.size()) {
                 if (block->surveyAreaPolygon()->coordinateList()!=polygons[block->fleetRegion()]) block->surveyAreaPolygon()->setPath(polygons[block->fleetRegion()]);
             }
-            if (block->fleetRegion()!=-1 || block->kind()=="survey" || block->kind()=="vantage" || block->kind()=="inspection") { block->setValue("altitude",altitude); block->setValue("yaw",profile["heading"].toDouble()); }
+            if (block->fleetRegion()!=-1 || block->kind()=="survey" || block->kind()=="vantage") { block->setValue("altitude",altitude); block->setValue("yaw",profile["heading"].toDouble()); }
         }
         for (int j=1;j<items->count();++j) if (auto* simple=qobject_cast<SimpleMissionItem*>(items->get(j))) {
             const auto command=simple->missionItem().command();
@@ -737,18 +737,4 @@ QString FleetPlanner::exportAll(const QString& filename)
     QSaveFile file(base+".plan"); if (!file.open(QIODevice::WriteOnly)) return file.errorString();
     const auto data=QJsonDocument(master).toJson(); if (file.write(data)!=data.size() || !file.commit()) return file.errorString();
     return {};
-}
-
-QVariantList FleetPlanner::inspectionSummary() const
-{
-    QVariantList summary;
-    for (int drone=0;drone<_children.size();++drone) {
-        int region=-1;
-        for (auto* block : blocks(_children[drone])) {
-            if (block->isSurveyItem()) region=block->fleetRegion();
-            if (block->kind()=="inspection") summary.append(QVariantMap{{"drone",drone},{"region",region+1},
-                {"name",block->inspectionName()},{"aircraft",_profiles[drone].toMap()["name"]},{"sequence",block->sequenceNumber()}});
-        }
-    }
-    return summary;
 }

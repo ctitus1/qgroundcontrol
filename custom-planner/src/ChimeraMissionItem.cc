@@ -16,7 +16,6 @@
 #include <QJsonDocument>
 #include "Fact.h"
 #include "FactMetaData.h"
-#include "SimpleMissionItem.h"
 
 namespace {
 QVariantMap point(const QGeoCoordinate& c, bool roi, double yaw)
@@ -107,7 +106,7 @@ ChimeraMissionItem::ChimeraMissionItem(PlanMasterController* master, bool flyVie
 {
     _survey->setParent(this);
     _flightSurvey->setParent(this);
-    _editorQml = kind == "inspection" ? "qrc:/Planner/InspectionEditor.qml" : "qrc:/Planner/BlockEditor.qml";
+    _editorQml = "qrc:/Planner/BlockEditor.qml";
     _values = planner->settings(nullptr);
     _values["enabled"] = true;
     _values["altitude"] = SettingsManager::instance()->appSettings()->defaultMissionItemAltitude()->rawValue();
@@ -115,10 +114,6 @@ ChimeraMissionItem::ChimeraMissionItem(PlanMasterController* master, bool flyVie
     _values["delay"] = 60.;
     _values["angle"] = 0.;
     _values["pitch"] = -70.;
-    if (kind == "inspection") {
-        _values["radius"]=20.; _values["bearing"]=0.; _values["arc"]=360.;
-        _values["clockwise"]=1.; _values["targetHeight"]=0.; _values["faceTarget"]=1.;
-    }
     auto keys = _values.keys(); keys.append("latitude"); keys.append("longitude");
     for (const auto& key : keys) {
         if (key == "enabled") continue;
@@ -136,10 +131,6 @@ ChimeraMissionItem::ChimeraMissionItem(PlanMasterController* master, bool flyVie
         if (key == "latitude") { metadata->setRawMin(-90); metadata->setRawMax(90); }
         if (key == "longitude") { metadata->setRawMin(-180); metadata->setRawMax(180); }
         if (QStringList{"width", "height", "fx", "fy", "cx", "cy"}.contains(key)) { metadata->setRawUnits("px"); metadata->setRawMin(key == "cx" || key == "cy" ? 0 : 0.1); }
-        if (key == "radius") { metadata->setRawUnits("m"); metadata->setRawMin(1); metadata->setRawMax(1000); }
-        if (key == "targetHeight") { metadata->setRawUnits("m"); metadata->setRawMin(0); }
-        if (key == "bearing") { metadata->setRawUnits("deg"); metadata->setRawMin(0); metadata->setRawMax(359.99); }
-        if (key == "arc") { metadata->setRawUnits("deg"); metadata->setRawMin(15); metadata->setRawMax(720); }
         field->setRawValue(_values.value(key, 0));
         _facts.insert(key, field);
         connect(field, &Fact::rawValueChanged, this, [this, key](const QVariant& value) { if (!_updating) setValue(key, value.toDouble()); });
@@ -467,22 +458,6 @@ void ChimeraMissionItem::rebuild()
                 }
             }
         }
-    } else if (_error.isEmpty() && _kind == "inspection") {
-        const double radius=_values["radius"].toDouble(), arc=_values["arc"].toDouble(), bearing=_values["bearing"].toDouble();
-        if (!_position.isValid() || radius<1 || radius>1000 || arc<15 || arc>720 || bearing<0 || bearing>=360 || _values["targetHeight"].toDouble()<0)
-            _error=tr("Set a valid ROI, radius 1 to 1000 m, arc 15 to 720 degrees, and nonnegative target height.");
-        else {
-            cmd(MAV_CMD_DO_SET_CAM_TRIGG_DIST,0);
-            cmd(MAV_CMD_DO_CHANGE_SPEED,1,speed,-1);
-            auto target=_position; target.setAltitude(_values["targetHeight"].toDouble()); nav(target,0,true);
-            const int steps=int(std::ceil(arc/15.));
-            const double direction=_values["clockwise"].toBool()?1:-1;
-            for (int i=0;i<=steps;++i) {
-                auto point=_position.atDistanceAndAzimuth(radius,bearing+direction*arc*i/steps); point.setAltitude(altitude);
-                nav(point,_values["faceTarget"].toBool()?point.azimuthTo(_position):yaw);
-            }
-            cmd(MAV_CMD_DO_SET_ROI_NONE);
-        }
     } else if (_error.isEmpty()) {
         _position.setAltitude(altitude);
         if (!_position.isValid() || _values["delay"].toDouble() <= 1) _error = tr("Set a valid position and a delay until greater than 1 second.");
@@ -522,7 +497,7 @@ void ChimeraMissionItem::rebuild()
         const double value = it.key() == "latitude" ? centerCoordinate().latitude() : it.key() == "longitude" ? centerCoordinate().longitude() : _values[it.key()].toDouble();
         if (std::isfinite(value)) it.value()->setRawValue(value);
     }
-    emit commandNameChanged(); emit changed(); emit isIncompleteChanged(); emit readyForSaveStateChanged();
+    emit changed(); emit isIncompleteChanged(); emit readyForSaveStateChanged();
     emit coordinateChanged(coordinate()); emit exitCoordinateChanged(exitCoordinate());
     emit amslEntryAltChanged(amslEntryAlt()); emit amslExitAltChanged(amslExitAlt());
     emit minAMSLAltitudeChanged(); emit maxAMSLAltitudeChanged(); emit complexDistanceChanged();
@@ -542,7 +517,7 @@ void ChimeraMissionItem::save(QJsonArray& items)
     QJsonArray polygon;
     for (const auto& c : surveyAreaPolygon()->coordinateList()) polygon.append(QJsonArray{c.latitude(), c.longitude()});
     items.append(QJsonObject{{"type", "ComplexItem"}, {"complexItemType", "chimera-" + _kind}, {"version", linkedSurvey() ? 3 : splitPart() ? 2 : 1},
-        {"inspectionName", _inspectionName}, {"fleetRegion", _fleetRegion}, {"centerOut", _centerOut}, {"cameraPreset", _cameraPreset}, {"values", QJsonObject::fromVariantMap(_values)}, {"position", QJsonArray{_position.latitude(), _position.longitude()}},
+        {"fleetRegion", _fleetRegion}, {"centerOut", _centerOut}, {"cameraPreset", _cameraPreset}, {"values", QJsonObject::fromVariantMap(_values)}, {"position", QJsonArray{_position.latitude(), _position.longitude()}},
         {"polygon", polygon}, {"surveyGroup", _groupId}, {"rangeStart", _start}, {"rangeEnd", _end}, {"frozenRoute", _frozen}, {"resume", _resume}, {"inspections", QJsonArray::fromVariantList(_inspections)}});
 }
 bool ChimeraMissionItem::load(const QJsonObject& json, int sequence, QString& error)
@@ -565,7 +540,6 @@ bool ChimeraMissionItem::load(const QJsonObject& json, int sequence, QString& er
         QList<QGeoCoordinate> polygon;
         for (const auto& p : json["polygon"].toArray()) { const auto a = p.toArray(); polygon.append(QGeoCoordinate(a[0].toDouble(), a[1].toDouble())); }
         surveyAreaPolygon()->setPath(polygon);
-        _inspectionName=json["inspectionName"].toString(tr("Building inspection"));
         _inspections = json["inspections"].toArray().toVariantList();
         _fleetRegion = json["fleetRegion"].toInt(-1);
         _centerOut = json["centerOut"].toBool();
@@ -675,12 +649,6 @@ QString ChimeraMissionItem::splitAt(double fraction)
     if (!continuation) return tr("Could not create the survey continuation.");
     QString error;
     if (!continuation->load(json, continuation->sequenceNumber(), error)) { controller->removeVisualItem(index + 1); return error; }
-    {
-        QScopedValueRollback<bool> guard(continuation->_updating, true);
-        continuation->surveyAreaPolygon()->setPath(surveyAreaPolygon()->coordinateList());
-        continuation->_syncedPolygon = surveyAreaPolygon()->coordinateList();
-    }
-    continuation->rebuild();
     _groupId = group; _end = fraction;
     _syncedValues = _values; _syncedPolygon = surveyAreaPolygon()->coordinateList();
     rebuild();
@@ -745,72 +713,4 @@ QString ChimeraMissionItem::upgradeFrozenSurvey()
         item->_frozen = {}; item->rebuild();
     }
     return {};
-}
-
-void ChimeraMissionItem::setInspectionName(const QString& name)
-{
-    if (name.trimmed().isEmpty() || _inspectionName==name.trimmed()) return;
-    _inspectionName=name.trimmed(); setDirty(true); emit commandNameChanged(); emit changed();
-}
-QString ChimeraMissionItem::insertOrbit(const QGeoCoordinate& pause, const QGeoCoordinate& target)
-{
-    if (!target.isValid() || (!isSurveyItem() && _kind!="inspection")) return tr("Select a survey or an inspection first.");
-    auto* mission=_masterController->missionController();
-    if (isSurveyItem()) { const auto error=addSplitPoint(pause); if (!error.isEmpty()) return error; }
-    int index=-1, number=1;
-    for (int i=1;i<mission->visualItems()->count();++i) {
-        if (mission->visualItems()->get(i)==this) index=i;
-        auto* block=qobject_cast<ChimeraMissionItem*>(mission->visualItems()->get(i));
-        if (block && block->kind()=="inspection") ++number;
-    }
-    if (index<0) return tr("The selected item is no longer in this mission.");
-    auto* orbit=qobject_cast<ChimeraMissionItem*>(mission->insertComplexMissionItem("Chimera inspection",target,index+1));
-    if (!orbit) return tr("Could not create the inspection.");
-    orbit->setValue("altitude",_values["altitude"].toDouble()); orbit->setValue("speed",_values["speed"].toDouble());
-    orbit->setValue("yaw",_values["yaw"].toDouble());
-    if (_kind=="inspection")
-        for (const auto& key : {"radius", "arc", "clockwise", "targetHeight", "faceTarget"}) orbit->setValue(key,_values[key].toDouble());
-    orbit->setValue("bearing",target.azimuthTo(exitCoordinate()));
-    orbit->setInspectionName(tr("Building ROI %1").arg(number));
-    mission->setCurrentPlanViewSeqNum(orbit->sequenceNumber(),true);
-    return orbit->error();
-}
-QString ChimeraMissionItem::expandInspection()
-{
-    if (_kind!="inspection" || !_error.isEmpty()) return tr("Select a valid inspection.");
-    auto* mission=_masterController->missionController(); int index=-1;
-    for (int i=1;i<mission->visualItems()->count();++i) if (mission->visualItems()->get(i)==this) index=i;
-    if (index<0) return tr("The inspection is no longer in this mission.");
-    QObject owner; QList<MissionItem*> commands; appendMissionItems(commands,&owner);
-    for (int i=0;i<commands.size();++i) {
-        auto* simple=qobject_cast<SimpleMissionItem*>(mission->insertSimpleMissionItem(centerCoordinate(),index+i));
-        simple->missionItem()=*commands[i];
-        if (commands[i]->command()==MAV_CMD_NAV_WAYPOINT) {
-            simple->setAltitudeMode(QGroundControlQmlGlobal::AltitudeModeRelative); simple->applyNewAltitude(_values["altitude"].toDouble());
-        }
-    }
-    mission->removeVisualItem(index+commands.size());
-    mission->setCurrentPlanViewSeqNum(qobject_cast<VisualMissionItem*>(mission->visualItems()->get(index))->sequenceNumber(),true);
-    return {};
-}
-
-QString ChimeraMissionItem::commandName() const
-{
-    if (_kind=="inspection") return _inspectionName;
-    if (!isSurveyItem()) return patternName();
-    const auto name=_fleetRegion>=0 ? tr("R%1 survey").arg(_fleetRegion+1) : tr("Survey");
-    return linkedSurvey() ? tr("%1: %2-%3%").arg(name).arg(_start*100,0,'f',1).arg(_end*100,0,'f',1) : name;
-}
-QGeoCoordinate ChimeraMissionItem::nearestRoutePoint(const QGeoCoordinate& coordinate) const
-{
-    QList<QGeoCoordinate> path;
-    for (const auto& value : _route) path.append(value.value<QGeoCoordinate>());
-    double distance=routeFraction(path,coordinate)*routeLength(path);
-    if (distance<0) return {};
-    for (int i=1;i<path.size();++i) {
-        const double length=path[i-1].distanceTo(path[i]);
-        if (length>0 && distance<=length) return path[i-1].atDistanceAndAzimuth(distance,path[i-1].azimuthTo(path[i]));
-        distance-=length;
-    }
-    return path.isEmpty()?QGeoCoordinate():path.last();
 }
