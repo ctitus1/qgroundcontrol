@@ -136,6 +136,7 @@ public:
     virtual void preSaveToMissionJson(PlanMasterController *pController, QJsonObject &missionJson) { Q_UNUSED(pController); Q_UNUSED(missionJson); }
     /// Allows custom builds to add custom items to the mission section of the plan file after the item is created.
     virtual void postSaveToMissionJson(PlanMasterController *pController, QJsonObject &missionJson) { Q_UNUSED(pController); Q_UNUSED(missionJson); }
+    virtual QString missionUploadError(PlanMasterController* controller) const { Q_UNUSED(controller); return {}; }
 
     /// Allows custom builds to load custom items from the plan file before the document is parsed.
     virtual void preLoadFromJson(PlanMasterController *pController, QJsonObject &json) { Q_UNUSED(pController); Q_UNUSED(json); }

@@ -21,6 +21,7 @@ Rectangle {
     property bool   transectAreaDefinitionComplete: true
     property string transectAreaDefinitionHelp:     _internalError
     property string transectValuesHeaderName:       _internalError
+    property var    customTransectComponent: null
     property var    transectValuesComponent:        undefined
     property var    presetsTransectValuesComponent: undefined
 
@@ -132,6 +133,10 @@ Rectangle {
                 TransectStyleComplexItemStats {
                     Layout.fillWidth:   true
                     visible:            statsHeader.checked
+                }
+                Loader {
+                    Layout.fillWidth: true
+                    sourceComponent: customTransectComponent
                 }
             } // Grid Column
 

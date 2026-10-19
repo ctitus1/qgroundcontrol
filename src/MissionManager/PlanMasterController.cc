@@ -72,14 +72,14 @@ PlanMasterController::~PlanMasterController()
 
 }
 
-void PlanMasterController::start(void)
+void PlanMasterController::start(bool offlineOnly)
 {
     _missionController.start    (_flyView);
     _geoFenceController.start   (_flyView);
     _rallyPointController.start (_flyView);
 
-    _activeVehicleChanged(_multiVehicleMgr->activeVehicle());
-    connect(_multiVehicleMgr, &MultiVehicleManager::activeVehicleChanged, this, &PlanMasterController::_activeVehicleChanged);
+    _activeVehicleChanged(offlineOnly ? nullptr : _multiVehicleMgr->activeVehicle());
+    if (!offlineOnly) connect(_multiVehicleMgr, &MultiVehicleManager::activeVehicleChanged, this, &PlanMasterController::_activeVehicleChanged);
 
     _updatePlanCreatorsList();
 }
@@ -318,6 +318,12 @@ void PlanMasterController::_sendRallyPointsComplete(void)
 
 void PlanMasterController::sendToVehicle(void)
 {
+    const QString error = QGCCorePlugin::instance()->missionUploadError(this);
+    if (!error.isEmpty()) {
+        QGC::showAppMessage(error);
+        return;
+    }
+
     SharedLinkInterfacePtr sharedLink = _managerVehicle->vehicleLinkManager()->primaryLink().lock();
     if (sharedLink) {
         if (sharedLink->linkConfiguration()->isHighLatency()) {

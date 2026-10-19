@@ -14,6 +14,7 @@ Rectangle {
     color: qgcPal.toolbarBackground
 
     property var planMasterController
+    property var planActions: planMasterController
     property bool showRallyPointsHelp: false
 
     signal toolbarButtonClicked()
@@ -57,6 +58,7 @@ Rectangle {
             anchors.top: parent.top
             anchors.bottom: parent.bottom
             planMasterController: _root.planMasterController
+            planActions: _root.planActions
             showRallyPointsHelp: _root.showRallyPointsHelp
             onToolbarButtonClicked: _root.toolbarButtonClicked()
         }

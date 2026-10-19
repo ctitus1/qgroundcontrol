@@ -10,6 +10,7 @@ import QGroundControl.FactControls
 // Toolbar for Plan View
 RowLayout {
     required property var planMasterController
+    property var planActions: planMasterController
     property bool showRallyPointsHelp: false
 
     signal toolbarButtonClicked()
@@ -22,7 +23,7 @@ RowLayout {
     property var _geoFenceController: _planMasterController.geoFenceController
     property var _rallyPointController: _planMasterController.rallyPointController
     property bool _controllerOffline: _planMasterController.offline
-    property var _saveDirty: _planMasterController.dirtyForSave
+    property var _saveDirty: planActions.dirtyForSave
     property var _uploadDirty: _planMasterController.dirtyForUpload
     property var _syncInProgress: _planMasterController.syncInProgress
     property var _visualItems: _missionController.visualItems
@@ -31,7 +32,7 @@ RowLayout {
     readonly property real _margins: ScreenTools.defaultFontPixelWidth
 
     function _uploadClicked() {
-        _planMasterController.upload()
+        root.planActions.upload()
     }
 
     function _downloadClicked() {
@@ -47,7 +48,7 @@ RowLayout {
 
     function _openButtonClicked() {
         // Unsent changes don't matter when offline or when the plan is safely saved to a file
-        let planSafeOnDisk = !_saveDirty && _planMasterController.currentPlanFile !== ""
+        let planSafeOnDisk = !_saveDirty && root.planActions.currentPlanFile !== ""
         let unsentChanges = _uploadDirty && !_controllerOffline && !planSafeOnDisk
         if (_saveDirty || unsentChanges) {
             let msg
@@ -61,24 +62,24 @@ RowLayout {
             QGroundControl.showMessageDialog(root, qsTr("Open Plan"),
                                         msg,
                                         Dialog.Yes | Dialog.Cancel,
-                                        function() { _planMasterController.loadFromSelectedFile() } )
+                                        function() { root.planActions.loadFromSelectedFile() } )
         } else {
-            _planMasterController.loadFromSelectedFile()
+            root.planActions.loadFromSelectedFile()
         }
     }
 
     function _saveButtonClicked() {
-        if (_planMasterController.currentPlanFile === "") {
-            _planMasterController.saveToSelectedFile()
+        if (root.planActions.currentPlanFile === "") {
+            root.planActions.saveToSelectedFile()
         } else {
-            _planMasterController.saveToCurrent()
+            root.planActions.saveToCurrent()
         }
     }
 
     function _saveAsKMLClicked() {
         // Don't save if we only have Mission Settings item
         if (_visualItems.count > 1) {
-            _planMasterController.saveKmlToSelectedFile()
+            root.planActions.saveKmlToSelectedFile()
         }
     }
 
@@ -181,7 +182,7 @@ RowLayout {
 
                         onClicked: {
                             dropPanel.close()
-                            _planMasterController.saveToSelectedFile()
+                            root.planActions.saveToSelectedFile()
                         }
                     }
 

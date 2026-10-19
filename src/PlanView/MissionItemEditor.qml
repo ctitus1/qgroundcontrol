@@ -48,7 +48,7 @@ Rectangle {
         if (missionItem.isCurrentItem) {
             editorLoader.setSource(missionItem.editorQml, {
                 missionItem:    _root.missionItem,
-                availableWidth: _root.width - (editorLoader.anchors.margins * 2)
+                availableWidth: Qt.binding(() => _root.width - (editorLoader.anchors.margins * 2))
             })
         } else {
             editorLoader.setSource("")

@@ -1,0 +1,13 @@
+<RCC>
+    <qresource prefix="/Planner">
+        <file>CameraPresets.json</file>
+        <file alias="FleetSettings.qml">src/FleetSettings.qml</file>
+        <file alias="FleetSetup.qml">src/FleetSetup.qml</file>
+        <file alias="FleetBar.qml">src/FleetBar.qml</file>
+        <file alias="FleetOverlay.qml">src/FleetOverlay.qml</file>
+        <file alias="SurveyEditor.qml">src/SurveyEditor.qml</file>
+        <file alias="SurveyOverlay.qml">src/SurveyOverlay.qml</file>
+        <file alias="BlockEditor.qml">src/BlockEditor.qml</file>
+        <file alias="BlockMap.qml">src/BlockMap.qml</file>
+    </qresource>
+</RCC>

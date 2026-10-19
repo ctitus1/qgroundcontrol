@@ -15,6 +15,15 @@ TransectStyleComplexItemEditor {
     transectValuesComponent:        _transectValuesComponent
     presetsTransectValuesComponent: _transectValuesComponent
 
+    customTransectComponent: Component {
+        Loader {
+            width: parent ? parent.width : 0
+            active: typeof chimeraPlanner !== "undefined"
+            source: "qrc:/Planner/SurveyEditor.qml"
+            onLoaded: item.survey = missionItem
+        }
+    }
+
     property real   _margin:        ScreenTools.defaultFontPixelWidth / 2
     property var    _missionItem:   missionItem
 

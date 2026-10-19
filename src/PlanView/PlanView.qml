@@ -22,7 +22,9 @@ Item {
     readonly property real  _toolsMargin: ScreenTools.defaultFontPixelWidth * 0.75
     readonly property real  _rightPanelWidth: Math.min(width / 3, ScreenTools.defaultFontPixelWidth * 30)
 
-    property var    _planMasterController: planMasterController
+    readonly property var _fleet: typeof chimeraFleet !== "undefined" ? chimeraFleet : null
+    readonly property bool _showNativeRoute: !_fleet || !_fleet.enabled || (_fleet.selected > 0 && _fleet.pathDisplay === 0)
+    property var    _planMasterController: _fleet && _fleet.activeController ? _fleet.activeController : planMasterController
     property var    _missionController: _planMasterController.missionController
     property var    _geoFenceController: _planMasterController.geoFenceController
     property var    _rallyPointController: _planMasterController.rallyPointController
@@ -74,7 +76,8 @@ Item {
         flyView: false
 
         Component.onCompleted: {
-            _planMasterController.start()
+            planMasterController.start()
+            if (_fleet) _fleet.attach(planMasterController)
             _missionController.setCurrentPlanViewSeqNum(0, true)
         }
 
@@ -96,10 +99,10 @@ Item {
         }
 
         function checkReadyForSaveUpload(save) {
-            if (readyForSaveState() == VisualMissionItem.NotReadyForSaveData) {
+            if (_planMasterController.readyForSaveState() == VisualMissionItem.NotReadyForSaveData) {
                 waitingOnIncompleteDataMessage(save)
                 return false
-            } else if (readyForSaveState() == VisualMissionItem.NotReadyForSaveTerrain) {
+            } else if (_planMasterController.readyForSaveState() == VisualMissionItem.NotReadyForSaveTerrain) {
                 waitingOnTerrainDataMessage(save)
                 return false
             }
@@ -111,7 +114,7 @@ Item {
                 return
             }
             switch (_missionController.sendToVehiclePreCheck()) {
-                case MissionController.SendToVehiclePreCheckStateOk: sendToVehicle()
+                case MissionController.SendToVehiclePreCheckStateOk: _planMasterController.sendToVehicle()
                     break
                 case MissionController.SendToVehiclePreCheckStateActiveMission: QGroundControl.showMessageDialog(_root, qsTr("Send To Vehicle"), qsTr("Current mission must be paused prior to uploading a new Plan"))
                     break
@@ -144,7 +147,11 @@ Item {
         }
 
         function fitViewportToItems() {
-            mapFitFunctions.fitMapViewportToMissionItems()
+            if (_fleet && _fleet.enabled) {
+                var coordinates = []
+                for (var overlay of _fleet.overlays) coordinates = coordinates.concat(overlay.path)
+                mapFitFunctions.fitMapViewportToAllCoordinates(coordinates)
+            } else mapFitFunctions.fitMapViewportToMissionItems()
         }
 
         function saveKmlToSelectedFile() {
@@ -218,7 +225,7 @@ Item {
 
         onAcceptedForSave: (file) => {
             if (planFiles) {
-                if (_planMasterController.saveToFile(file)) {
+                if (planMasterController.saveToFile(file)) {
                     close()
                 }
             } else {
@@ -228,16 +235,31 @@ Item {
         }
 
         onAcceptedForLoad: (file) => {
-            _planMasterController.loadFromFile(file)
-            _planMasterController.fitViewportToItems()
+            planMasterController.loadFromFile(file)
+            planMasterController.fitViewportToItems()
             _missionController.setCurrentPlanViewSeqNum(0, true)
             close()
         }
     }
 
+    Loader {
+        id: fleetBar
+        anchors.top: planToolBar.bottom
+        anchors.horizontalCenter: parent.horizontalCenter
+        active: _fleet !== null && _fleet.enabled
+        source: "qrc:/Planner/FleetBar.qml"
+        onLoaded: item.fitRequested.connect(planMasterController.fitViewportToItems)
+    }
+    Loader {
+        active: _fleet !== null && _fleet.enabled
+        source: "qrc:/Planner/FleetOverlay.qml"
+        onLoaded: item.map = editorMap
+    }
+
     PlanViewToolBar {
         id: planToolBar
         planMasterController: _planMasterController
+        planActions: planMasterController
         showRallyPointsHelp: _editingLayer === _layerRally
     }
 
@@ -245,7 +267,7 @@ Item {
         id: mainPlanViewArea
         anchors.left: parent.left
         anchors.right: parent.right
-        anchors.top: planToolBar.bottom
+        anchors.top: fleetBar.active ? fleetBar.bottom : planToolBar.bottom
         anchors.bottom: parent.bottom
 
         FlightMap {
@@ -335,13 +357,13 @@ Item {
             // Add lines between waypoints
             MissionLineView {
                 showSpecialVisual: _missionController.isROIBeginCurrentItem
-                model: _missionController.simpleFlightPathSegments
+                model: _showNativeRoute ? _missionController.simpleFlightPathSegments : undefined
                 opacity: _editingLayer == _layerMission ? 1 : editorMap._nonInteractiveOpacity
             }
 
             // Direction arrows in waypoint lines
             MapItemView {
-                model: _editingLayer == _layerMission ? _missionController.directionArrows : undefined
+                model: _showNativeRoute && _editingLayer == _layerMission ? _missionController.directionArrows : undefined
 
                 delegate: MapLineArrow {
                     fromCoord: object ? object.coordinate1 : undefined
@@ -357,7 +379,7 @@ Item {
                 anchorPoint.x: sourceItem.width / 2
                 anchorPoint.y: sourceItem.height / 2
                 z: QGroundControl.zOrderWaypointLines + 1
-                visible: _editingLayer == _layerMission
+                visible: _showNativeRoute && _editingLayer == _layerMission
 
                 sourceItem: SplitIndicator {
                     onClicked: _missionController.insertSimpleMissionItem(splitSegmentItem.coordinate,
@@ -665,7 +687,7 @@ Item {
             anchors.right: rightPanel.left
             anchors.bottom: parent.bottom
             spacing: 0
-            visible: !hidden && _editingLayer == _layerMission && QGroundControl.corePlugin.options.showMissionStatus
+            visible: (!_fleet || !_fleet.enabled || _fleet.selected > 0) && !hidden && _editingLayer == _layerMission && QGroundControl.corePlugin.options.showMissionStatus
 
             readonly property bool hidden: _planViewSettings.showMissionItemStatus.rawValue ? false : true
 
