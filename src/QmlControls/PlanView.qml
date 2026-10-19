@@ -42,6 +42,7 @@ Item {
     readonly property bool  _waypointsOnlyMode:         QGroundControl.corePlugin.options.missionWaypointsOnly
 
     readonly property var _fleet: typeof chimeraFleet !== "undefined" ? chimeraFleet : null
+    readonly property bool _showNativeRoute: !_fleet || !_fleet.enabled || (_fleet.selected > 0 && _fleet.pathDisplay === 0)
     property var    _planMasterController:              _fleet && _fleet.activeController ? _fleet.activeController : planMasterController
     property var    _missionController:                 _planMasterController.missionController
     property var    _geoFenceController:                _planMasterController.geoFenceController
@@ -446,13 +447,13 @@ Item {
             // Add lines between waypoints
             MissionLineView {
                 showSpecialVisual:  _missionController.isROIBeginCurrentItem
-                model:              _missionController.simpleFlightPathSegments
+                model:              _showNativeRoute ? _missionController.simpleFlightPathSegments : undefined
                 opacity:            _editingLayer == _layerMission ||  _editingLayer == _layerUTMSP  ? 1 : editorMap._nonInteractiveOpacity
             }
 
             // Direction arrows in waypoint lines
             MapItemView {
-                model: _editingLayer == _layerMission ||_editingLayer == _layerUTMSP ? _missionController.directionArrows : undefined
+                model: _showNativeRoute && (_editingLayer == _layerMission ||_editingLayer == _layerUTMSP) ? _missionController.directionArrows : undefined
 
                 delegate: MapLineArrow {
                     fromCoord:      object ? object.coordinate1 : undefined
@@ -464,7 +465,7 @@ Item {
 
             // Incomplete segment lines
             MapItemView {
-                model: _missionController.incompleteComplexItemLines
+                model: _showNativeRoute ? _missionController.incompleteComplexItemLines : undefined
 
                 delegate: MapPolyline {
                     path:       [ object.coordinate1, object.coordinate2 ]

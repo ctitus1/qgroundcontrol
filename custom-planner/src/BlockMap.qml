@@ -12,6 +12,9 @@ Item {
     property bool interactive: true
     property var block: object
     property bool masterDomain: chimeraFleet.enabled && chimeraFleet.selected === 0 && block.kind === "survey" && block.fleetRegion === -1
+    property bool routeDetails: !chimeraFleet.enabled || chimeraFleet.pathDisplay === 0 ||
+        (chimeraFleet.pathDisplay === 1 && chimeraFleet.selected > 0 &&
+         block.fleetRegion === (chimeraFleet.drones[chimeraFleet.selected - 1] || {}).startRegion)
     property var pools: ({})
     property var used: ({})
     signal clicked(int sequenceNumber)
@@ -56,9 +59,9 @@ Item {
     }
     function refresh() {
         used = ({})
-        if (!masterDomain) add(line, { path: block.route })
-        if (block.kind === "survey") add(marker, { coordinate: block.coordinate, label: block.abbreviation, routePoint: -1 })
-        if (block.isCurrentItem && block.kind === "survey" && !masterDomain) {
+        if (!masterDomain && routeDetails) add(line, { path: block.route })
+        if (block.kind === "survey" && (masterDomain || routeDetails)) add(marker, { coordinate: block.coordinate, label: block.abbreviation, routePoint: -1 })
+        if (block.isCurrentItem && block.kind === "survey" && !masterDomain && routeDetails) {
             for (var corners of (block.preview.footprints || [])) add(footprint, {path: corners})
             var path = block.preview.path || []
             for (var i = 0; i < path.length; ++i) add(marker, {coordinate: path[i], label: "", routePoint: i})
@@ -109,7 +112,7 @@ Item {
     }
     Loader {
         id: endHandle
-        active: root.block.hasEndSplit && root.block.isCurrentItem
+        active: root.block.hasEndSplit && root.block.isCurrentItem && root.routeDetails
         sourceComponent: Component {
             MapQuickItem {
                 coordinate: root.block.exitCoordinate

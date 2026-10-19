@@ -46,17 +46,17 @@ Item {
             markers[i].title = paths[i].name
             markers[i].tint = paths[i].color
             markers[i].drone = paths[i].drone
-            markers[i].visible = paths[i].drone === 0 || chimeraFleet.showRoutes
+            markers[i].visible = paths[i].drone === 0 || chimeraFleet.pathDisplay !== 2
             fills[i].visible = paths[i].drone === 0
             fills[i].path = paths[i].drone === 0 ? paths[i].path : []
             fills[i].color = paths[i].color
             lines[i].path = paths[i].path
             lines[i].moving = paths[i].moving || []
             lines[i].region = paths[i].drone === 0
-            lines[i].line.color = paths[i].color
+            lines[i].line.color = paths[i].drone > 0 && paths[i].drone === chimeraFleet.selected ? "white" : paths[i].color
             lines[i].line.width = chimeraFleet.selected === 0 ? 3 : 2
             lines[i].opacity = chimeraFleet.selected === 0 ? 0.9 : 0.3
-            lines[i].visible = paths[i].drone === 0 || (chimeraFleet.showRoutes && chimeraFleet.selected !== paths[i].drone)
+            lines[i].visible = paths[i].drone === 0 || (chimeraFleet.pathDisplay !== 2 && (chimeraFleet.selected !== paths[i].drone || chimeraFleet.pathDisplay === 1))
         }
         refreshControls()
     }

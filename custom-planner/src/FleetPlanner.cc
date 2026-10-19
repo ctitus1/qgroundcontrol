@@ -99,6 +99,13 @@ FleetPlanner::FleetPlanner(QObject* parent) : QObject(parent)
     connect(&_syncTimer, &QTimer::timeout, this, &FleetPlanner::synchronize);
     connect(&_previewTimer, &QTimer::timeout, this, [this] { watch(); notify(); });
 }
+void FleetPlanner::setPathDisplay(int display)
+{
+    if (display<WholePath || display>NoPaths || display==_pathDisplay) return;
+    _pathDisplay=static_cast<PathDisplay>(display);
+    if (_master && enabled()) _master->setDirty(true);
+    emit changed();
+}
 void FleetPlanner::notify()
 {
     if (_publishedProfiles!=_profiles) { _publishedProfiles=_profiles; emit profilesChanged(); }
@@ -123,7 +130,7 @@ void FleetPlanner::clear(bool immediate)
 {
     _selected = 0; _syncTimer.stop(); _previewTimer.stop();
     auto children = _children; _children.clear(); _profiles.clear(); _masterValues.clear(); _masterCamera=-1; _archive = {}; _error.clear();
-    _partitionCenter={}; _partitionOrigin={}; _partitionVertices.clear(); _partitionPolygon.clear(); _cachedRegions.clear(); _night=false;
+    _partitionCenter={}; _partitionOrigin={}; _partitionVertices.clear(); _partitionPolygon.clear(); _cachedRegions.clear(); _night=false; _pathDisplay=WholePath;
     notify();
     for (auto* child : children) { if (immediate) delete child; else child->deleteLater(); }
 }
@@ -569,9 +576,14 @@ QVariantList FleetPlanner::overlays() const
     QVariantList result;
     for (int i=0;i<_children.size();++i) {
         QVariantList path, moving; auto* items=_children[i]->missionController()->visualItems();
-        for (int j=1;j<items->count();++j) {
+        int firstRegion=-1;
+        for (int j=1;_pathDisplay!=NoPaths && j<items->count();++j) {
             auto* visual=qobject_cast<VisualMissionItem*>(items->get(j));
             auto* block=qobject_cast<ChimeraMissionItem*>(visual);
+            if (block && block->fleetRegion()>=0) {
+                if (firstRegion<0) firstRegion=block->fleetRegion();
+                else if (_pathDisplay==FirstSectorPath && block->fleetRegion()!=firstRegion) break;
+            }
             const int previousCount=path.size();
             if (block) path.append(block->route());
             else if (auto* simple=qobject_cast<SimpleMissionItem*>(visual); simple && simple->missionItem().command()==MAV_CMD_NAV_RETURN_TO_LAUNCH)
@@ -645,7 +657,7 @@ void FleetPlanner::save(PlanMasterController* controller,QJsonObject& mission)
     for (auto* child : _children) plans.append(child->saveToJson().object());
     mission["chimeraFleet"]=QJsonObject{{"version",1},{"minimum",_minimum},{"maximum",_maximum},{"maximumGap",_maximumGap},
         {"profiles",QJsonArray::fromVariantList(_profiles)},{"plans",plans},{"archive",_archive},{"night",_night},
-        {"partition",partition}};
+        {"partition",partition},{"pathDisplay",_pathDisplay}};
 }
 void FleetPlanner::load(PlanMasterController* controller,const QJsonObject& plan)
 {
@@ -667,6 +679,7 @@ void FleetPlanner::load(PlanMasterController* controller,const QJsonObject& plan
     }
     if (!domain() || !fiducial()) { _error=tr("Restore the shared master survey and fiducial."); notify(); return; }
     _night=fleet["night"].toBool();
+    _pathDisplay=static_cast<PathDisplay>(std::clamp(fleet["pathDisplay"].toInt(),int(WholePath),int(NoPaths)));
     const auto controls=fleet["partition"].toArray();
     for (int i=0;i<controls.size();++i) {
         const auto p=controls[i].toArray();

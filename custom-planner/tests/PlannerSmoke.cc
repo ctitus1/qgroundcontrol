@@ -11,6 +11,7 @@
 #include "MissionSettingsItem.h"
 #include "SimpleMissionItem.h"
 #include "SpeedSection.h"
+#include "CameraSection.h"
 #include "QGCMapPolygon.h"
 #include "QGCCorePlugin.h"
 #include "QmlObjectListModel.h"
@@ -389,6 +390,14 @@ void schedulePlannerSmoke(QQmlApplicationEngine* engine, ChimeraPlanner*)
             check(headingRegion->values()["yaw"].toDouble()==12,"Slider route updates run while the drag remains active");
             fleet.setProfile(0,"heading",0);
 
+            const auto wholePath=fleet.overlays().first().toMap()["path"].toList();
+            fleet.setPathDisplay(FleetPlanner::FirstSectorPath);
+            const auto firstSectorPath=fleet.overlays().first().toMap()["path"].toList();
+            check(!firstSectorPath.isEmpty() && firstSectorPath.size()<wholePath.size(),"First-sector display stops before later survey regions");
+            fleet.setPathDisplay(FleetPlanner::NoPaths);
+            for (const auto& overlay : fleet.overlays()) if (overlay.toMap()["drone"].toInt()>0)
+                check(overlay.toMap()["path"].toList().isEmpty(),"No-path display hides every drone route");
+            fleet.setPathDisplay(FleetPlanner::WholePath);
             fleet.setFiducialRadius(3.5);
             auto* radiusMarker=qobject_cast<ChimeraMissionItem*>(fleet.activeController()->missionController()->visualItems()->get(2));
             check(std::abs(radiusMarker->coordinate().distanceTo(origin)-3.5)<0.01,"Changing radius updates drone positions");
@@ -462,6 +471,7 @@ void schedulePlannerSmoke(QQmlApplicationEngine* engine, ChimeraPlanner*)
             auto* archivedRegion = qobject_cast<ChimeraMissionItem*>(fleet.activeController()->missionController()->visualItems()->get(3));
             archivedRegion->setValue("speed", 2.5);
             check(fleet.setCount(2).isEmpty(), "Archive a removed drone before save");
+            fleet.setPathDisplay(FleetPlanner::FirstSectorPath);
             const auto savedControls=fleet.controlPoints();
             auto fleetJson = fleetMaster.saveToJson().object();
             auto fleetMissionJson = fleetJson["mission"].toObject();
@@ -471,6 +481,7 @@ void schedulePlannerSmoke(QQmlApplicationEngine* engine, ChimeraPlanner*)
             fleet.attach(&restoredFleet); fleet.load(&restoredFleet, fleetJson);
             check(fleet.enabled() && fleet.validate().isEmpty(), "Master restores all drone missions");
             check(fleet.fiducialRadius()==3.5 && fleet.rapidTransitSpeed()==6,"Master restores fiducial radius and rapid transit speed");
+            check(fleet.pathDisplay()==FleetPlanner::FirstSectorPath,"Master restores the route display choice");
             check(fleet.controlPoints().size()==savedControls.size() && fleet.controlPoints()[0].value<QGeoCoordinate>().distanceTo(savedControls[0].value<QGeoCoordinate>())<0.01,"Master restores partition controls");
             check(fleet.setCount(3).isEmpty(), "Restore an archived drone after reload");
             fleet.setSelected(3);
@@ -504,9 +515,10 @@ void schedulePlannerSmoke(QQmlApplicationEngine* engine, ChimeraPlanner*)
                     ++surveyEntries;
                 }
                 if (item["command"].toInt()==MAV_CMD_NAV_WAYPOINT) {
-                    const auto speedCommand=plainItems[i-1].toObject();
-                    check(i>0 && speedCommand["command"].toInt()==MAV_CMD_DO_CHANGE_SPEED,"Plain waypoints have explicit speeds");
-                    if (speedCommand["params"].toArray()[1].toDouble()==6) ++transitWaypoints;
+                    int settings=i+1;
+                    while (settings<plainItems.size() && plainItems[settings].toObject()["command"].toInt()==MAV_CMD_DO_MOUNT_CONTROL) ++settings;
+                    check(settings<plainItems.size() && plainItems[settings].toObject()["command"].toInt()==MAV_CMD_DO_CHANGE_SPEED,"Waypoint speed follows its camera settings for QGC grouping");
+                    if (entrySpeed==6) ++transitWaypoints;
                 }
                 while (expectedIndex<uploadItems.size() && uploadItems[expectedIndex]->command()==MAV_CMD_DO_CHANGE_SPEED) ++expectedIndex;
                 if (expectedIndex>=uploadItems.size()) continue;
@@ -519,8 +531,20 @@ void schedulePlannerSmoke(QQmlApplicationEngine* engine, ChimeraPlanner*)
             PlanMasterController plainController; plainController.setFlyView(false); plainController.start(true);
             check(plainController.missionController()->load(plainMission,error),error);
             auto* plainVisuals=plainController.missionController()->visualItems();
-            for (int i=1;i<plainVisuals->count();++i)
+            int groupedGimbals=0;
+            for (int i=1;i<plainVisuals->count();++i) {
                 check(!qobject_cast<ChimeraMissionItem*>(plainVisuals->get(i)),"Standard mission loads without custom blocks");
+                auto* waypoint=qobject_cast<SimpleMissionItem*>(plainVisuals->get(i));
+                if (!waypoint) continue;
+                check(waypoint->missionItem().command()!=MAV_CMD_DO_MOUNT_CONTROL,"Gimbal commands are absorbed into native waypoint sections");
+                if (waypoint->missionItem().command()!=MAV_CMD_NAV_WAYPOINT) continue;
+                check(waypoint->speedSection()->specifyFlightSpeed(),"QGC shows the waypoint flight-speed checkbox checked");
+                if (waypoint->cameraSection()->specifyGimbal()) {
+                    ++groupedGimbals;
+                    check(std::isfinite(waypoint->missionItem().param4()),"QGC waypoint retains the aircraft heading");
+                }
+            }
+            check(groupedGimbals>=surveyEntries,"Survey entries show gimbal and speed settings on one QGC waypoint");
             fleet.setProfile(0,"startRegion",1);
             fleet.setSelected(1);
             check(qobject_cast<ChimeraMissionItem*>(fleet.activeController()->missionController()->visualItems()->get(3))->fleetRegion()==1, "Master region assignment reorders complete survey groups");
@@ -578,11 +602,24 @@ void schedulePlannerSmoke(QQmlApplicationEngine* engine, ChimeraPlanner*)
             check(QMetaObject::invokeMethod(mainWindow,"showPlanView"),"Show native master view");
             check(QMetaObject::invokeMethod(liveMaster,"fitViewportToItems"),"Fit fleet master map");
             QEventLoop viewEvents; QTimer::singleShot(250,&viewEvents,&QEventLoop::quit); viewEvents.exec();
+            QList<QQuickItem*> toolbarItems{mainWindow->contentItem()};
+            bool toolbarFound=false, selectorFound=false, exportFound=false;
+            for (int i=0;i<toolbarItems.size();++i) {
+                auto* item=toolbarItems[i]; toolbarItems.append(item->childItems());
+                if (item->objectName()=="fleetToolbar") {
+                    const auto position=item->mapToItem(mainWindow->contentItem(),QPointF());
+                    check(position.x()>=0 && position.x()+item->width()<=mainWindow->width(),"Top mission controls fit the window");
+                    toolbarFound=true;
+                }
+                selectorFound |= item->objectName()=="fleetSelector";
+                exportFound |= item->objectName()=="fleetExport";
+            }
+            check(toolbarFound && selectorFound && exportFound,"Top mission selector and export are present");
             mainWindow->grabWindow().save("/tmp/qgc-fleet-master.png");
-            liveFleet->setProperty("showRoutes",false);
+            liveFleet->setPathDisplay(FleetPlanner::NoPaths);
             QTimer::singleShot(150,&viewEvents,&QEventLoop::quit); viewEvents.exec();
             mainWindow->grabWindow().save("/tmp/qgc-fleet-sectors.png");
-            liveFleet->setProperty("showRoutes",true);
+            liveFleet->setPathDisplay(FleetPlanner::WholePath);
             liveFleet->setSelected(1);
             auto* liveMission=liveFleet->activeController()->missionController();
             liveMission->setCurrentPlanViewSeqNum(qobject_cast<VisualMissionItem*>(liveMission->visualItems()->get(3))->sequenceNumber(),true);

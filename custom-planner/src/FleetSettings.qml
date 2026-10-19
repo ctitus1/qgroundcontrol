@@ -63,11 +63,6 @@ ColumnLayout {
                 wrapMode: Text.WordWrap
                 text: qsTr("In Master view, drag the yellow center and blue ray handles to divide the area. Colors show each drone's starting region.")
             }
-            QGCCheckBox {
-                text: qsTr("Show flight paths")
-                checked: chimeraFleet.showRoutes
-                onClicked: chimeraFleet.showRoutes = checked
-            }
             QGCButton {
                 text: qsTr("Reset equal sectors")
                 onClicked: chimeraFleet.resetPartition()

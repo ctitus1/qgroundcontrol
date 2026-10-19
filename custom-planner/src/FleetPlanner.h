@@ -17,7 +17,7 @@ class FleetPlanner : public QObject
     Q_PROPERTY(PlanMasterController* activeController READ activeController NOTIFY activeControllerChanged)
     Q_PROPERTY(QVariantList drones READ drones NOTIFY profilesChanged)
     Q_PROPERTY(QVariantList overlays READ overlays NOTIFY changed)
-    Q_PROPERTY(bool showRoutes MEMBER _showRoutes NOTIFY changed)
+    Q_PROPERTY(int pathDisplay READ pathDisplay WRITE setPathDisplay NOTIFY changed)
     Q_PROPERTY(bool night READ night WRITE setNight NOTIFY profilesChanged)
     Q_PROPERTY(QVariantList cameraPresets READ cameraPresets NOTIFY controllersChanged)
     Q_PROPERTY(QVariantList controlPoints READ controlPoints NOTIFY changed)
@@ -29,7 +29,11 @@ class FleetPlanner : public QObject
     Q_PROPERTY(double maximumGap READ maximumGap NOTIFY changed)
     Q_PROPERTY(double separation READ separation NOTIFY changed)
 public:
+    enum PathDisplay { WholePath, FirstSectorPath, NoPaths };
+    Q_ENUM(PathDisplay)
     explicit FleetPlanner(QObject* parent = nullptr);
+    int pathDisplay() const { return _pathDisplay; }
+    void setPathDisplay(int display);
     Q_INVOKABLE void attach(PlanMasterController* master);
     Q_INVOKABLE void requestCreate(QObject* source, int count, double minimum, double maximum, double maximumGap);
     Q_INVOKABLE QString create(QObject* source, int count, double minimum, double maximum, double maximumGap);
@@ -99,7 +103,8 @@ private:
     QPointer<PlanMasterController> _publishedController;
     int _publishedSelection = -1;
     bool _publishedEnabled = false;
-    bool _night = false, _showRoutes = true;
+    bool _night = false;
+    PathDisplay _pathDisplay = WholePath;
     QGeoCoordinate _partitionCenter, _partitionOrigin;
     QList<QGeoCoordinate> _partitionVertices, _partitionPolygon;
     mutable SplitInput _cachedInput;

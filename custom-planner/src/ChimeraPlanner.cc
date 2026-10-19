@@ -36,6 +36,48 @@ MissionItem* command(QObject* owner, MAV_CMD cmd, double p1 = 0, double p2 = 0, 
         true, false, owner);
 }
 
+bool nativeSpeed(const MissionItem* item)
+{
+    return item->command() == MAV_CMD_DO_CHANGE_SPEED && item->param3() == -1 &&
+        item->param4() == 0 && item->param5() == 0 && item->param6() == 0 && item->param7() == 0;
+}
+
+QList<MissionItem*> waypointSections(const QList<MissionItem*>& compiled, QObject* owner, double defaultSpeed, int speedType)
+{
+    QList<MissionItem*> items;
+    double speed = defaultSpeed;
+    bool explicitSpeed = false;
+    for (auto* item : compiled) {
+        if (item->command() == MAV_CMD_DO_SET_CAM_TRIGG_DIST) continue;
+        if (nativeSpeed(item) && item->param1() == speedType && item->param2() > 0) {
+            if (explicitSpeed && speed == item->param2()) continue;
+            speed = item->param2(); explicitSpeed = true;
+        } else if (item->command() == MAV_CMD_DO_CHANGE_SPEED) explicitSpeed = false;
+        items.append(item);
+    }
+    for (int i = 1; i + 1 < items.size(); ++i) {
+        if (items[i-1]->command() == MAV_CMD_NAV_WAYPOINT && items[i]->command() == MAV_CMD_DO_SET_ROI_NONE && nativeSpeed(items[i+1]))
+            std::swap(items[i], items[i+1]);
+        if (nativeSpeed(items[i]) && items[i+1]->command() == MAV_CMD_DO_MOUNT_CONTROL)
+            std::swap(items[i], items[i+1]);
+    }
+    speed = defaultSpeed;
+    for (int i = 1; i < items.size(); ++i) {
+        if (items[i]->command() == MAV_CMD_DO_CHANGE_SPEED)
+            speed = items[i]->param2() > 0 ? items[i]->param2() : defaultSpeed;
+        if (items[i]->command() != MAV_CMD_NAV_WAYPOINT) continue;
+        int end = i + 1;
+        bool hasSpeed = false;
+        while (end < items.size() && (items[end]->command() == MAV_CMD_DO_MOUNT_CONTROL ||
+               items[end]->command() == MAV_CMD_SET_CAMERA_MODE || nativeSpeed(items[end]))) {
+            hasSpeed |= nativeSpeed(items[end]);
+            ++end;
+        }
+        if (!hasSpeed) items.insert(end, command(owner, MAV_CMD_DO_CHANGE_SPEED, speedType, speed, -1));
+    }
+    return items;
+}
+
 QJsonObject serialize(MissionItem* item, int sequence)
 {
     item->setSequenceNumber(sequence);
@@ -270,24 +312,13 @@ QString ChimeraPlanner::exportPlan(QObject* item, const QString& filename)
     }
     const auto* vehicle = controller->controllerVehicle();
     const double defaultSpeed = vehicle->multiRotor() || vehicle->vtol() ? vehicle->defaultHoverSpeed() : vehicle->defaultCruiseSpeed();
-    double flightSpeed = defaultSpeed;
+    const auto grouped = waypointSections(compiled, &owner, defaultSpeed, vehicle->multiRotor() ? 1 : 0);
     QJsonArray items;
-    int sequence = 1;
-    for (int i = 1; i < compiled.size(); ++i) {
-        auto* missionItem = compiled[i];
-        if (missionItem->command() == MAV_CMD_DO_SET_CAM_TRIGG_DIST) continue;
-        if (missionItem->command() == MAV_CMD_DO_JUMP || missionItem->command() == MAV_CMD_DO_JUMP_TAG) {
+    for (int i = 1; i < grouped.size(); ++i) {
+        auto* missionItem = grouped[i];
+        if (missionItem->command() == MAV_CMD_DO_JUMP || missionItem->command() == MAV_CMD_DO_JUMP_TAG)
             return tr("Remove mission jumps before export. Expansion changes their target sequences.");
-        }
-        if (missionItem->command() == MAV_CMD_DO_CHANGE_SPEED) {
-            if (missionItem->param2() > 0) flightSpeed = missionItem->param2();
-            else if (missionItem->param2() == -1) flightSpeed = defaultSpeed;
-        }
-        if (missionItem->command() == MAV_CMD_NAV_WAYPOINT &&
-            (items.isEmpty() || items.last().toObject()["command"].toInt() != MAV_CMD_DO_CHANGE_SPEED ||
-             items.last().toObject()["params"].toArray()[1].toDouble() <= 0))
-            items.append(serialize(command(&owner, MAV_CMD_DO_CHANGE_SPEED, 1, flightSpeed, -1), sequence++));
-        items.append(serialize(missionItem, sequence++));
+        items.append(serialize(missionItem, i));
     }
     auto root = controller->saveToJson().object();
     auto mission = root["mission"].toObject();
