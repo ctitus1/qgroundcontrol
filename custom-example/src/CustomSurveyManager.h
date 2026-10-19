@@ -211,6 +211,15 @@ private:
     // AMSLAltAboveTerrain trio the way SimpleMissionItem::save() does.
     QJsonObject           _missionItemToJson(const MissionItem& item, bool withAltitude) const;
 
+    // Returns the index of the survey being exported inside a plan "items" array
+    // (matched by sequence number), or -1 if it isn't there.
+    int                   _missionItemIndexForSurvey(const QJsonArray& items, QObject* survey) const;
+
+    // Rewrites doJumpId sequentially over a plan "items" array (recursing into
+    // nested TransectStyleComplexItem "Items") so a spliced-in item block doesn't
+    // leave duplicate/gapped ids behind. Returns the next free id.
+    int                   _renumberMissionItems(QJsonArray& items, int nextDoJumpId) const;
+
     bool                  _writePlanFile(const QJsonDocument& document, const QString& filename);
 
     void                  _createCaptureFacts();

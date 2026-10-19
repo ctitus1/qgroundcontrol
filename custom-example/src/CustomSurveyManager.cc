@@ -940,6 +940,47 @@ QJsonArray CustomSurveyManager::_buildRegionWaypointItems(PlanMasterController* 
     return out;
 }
 
+int CustomSurveyManager::_missionItemIndexForSurvey(const QJsonArray& items, QObject* survey) const
+{
+    const int seq = _sequenceNumber(survey);
+    if (seq < 0) {
+        return -1;
+    }
+    for (int i = 0; i < items.size(); ++i) {
+        const QJsonObject obj = items[i].toObject();
+        if (_isSurveyMissionObject(obj) && _sequenceNumberFromMissionObject(obj) == seq) {
+            return i;
+        }
+    }
+    return -1;
+}
+
+int CustomSurveyManager::_renumberMissionItems(QJsonArray& items, int nextDoJumpId) const
+{
+    static constexpr const char* kDoJumpIdKey = "doJumpId";
+    static constexpr const char* kTransectStyleKey = "TransectStyleComplexItem";
+    static constexpr const char* kTransectItemsKey = "Items";
+
+    for (int i = 0; i < items.size(); ++i) {
+        QJsonObject obj = items[i].toObject();
+        if (obj.contains(kDoJumpIdKey)) {
+            obj[kDoJumpIdKey] = nextDoJumpId++;
+        } else if (obj.contains(kTransectStyleKey)) {
+            // Complex items number their internal mission items; walk those too so
+            // the ids stay monotonic across the whole plan.
+            QJsonObject transect = obj[kTransectStyleKey].toObject();
+            QJsonArray nested = transect[kTransectItemsKey].toArray();
+            if (!nested.isEmpty()) {
+                nextDoJumpId = _renumberMissionItems(nested, nextDoJumpId);
+                transect[kTransectItemsKey] = nested;
+                obj[kTransectStyleKey] = transect;
+            }
+        }
+        items[i] = obj;
+    }
+    return nextDoJumpId;
+}
+
 bool CustomSurveyManager::saveRegionWaypointPlans(QObject* item, const QString& folder)
 {
     SurveyComplexItem* survey = _surveyItem(item);
@@ -987,7 +1028,19 @@ bool CustomSurveyManager::saveRegionWaypointPlans(QObject* item, const QString& 
     // alternating physical direction of each pass.
     const double transectYawDeg = survey->gridAngle()->rawValue().toDouble();
 
+    // The exported plan is the *current* plan with only the survey being exported
+    // swapped out for its generated waypoints — every other mission item (takeoff,
+    // other surveys, landing, ...) is carried through untouched and in place.
     const QJsonObject templateRoot = controller->saveToJson().object();
+    const QJsonObject templateMission = templateRoot.value(QStringLiteral("mission")).toObject();
+    const QJsonArray templateItems = templateMission.value(QStringLiteral("items")).toArray();
+
+    const int surveyIndex = _missionItemIndexForSurvey(templateItems, survey);
+    if (surveyIndex < 0) {
+        _setLastError(tr("Unable to locate the survey in the current mission."));
+        return false;
+    }
+
     QString baseName = QFileInfo(controller->currentPlanFile()).completeBaseName();
     if (baseName.isEmpty()) {
         baseName = QStringLiteral("custom-survey");
@@ -1003,9 +1056,23 @@ bool CustomSurveyManager::saveRegionWaypointPlans(QObject* item, const QString& 
         }
         totalPhotoPoints += photoPoints;
 
+        // Replace the survey item in place with this region's waypoint block,
+        // preserving the order of everything before and after it.
+        QJsonArray missionItems;
+        for (int j = 0; j < templateItems.size(); ++j) {
+            if (j == surveyIndex) {
+                for (const QJsonValue& waypoint : waypointItems) {
+                    missionItems.append(waypoint);
+                }
+            } else {
+                missionItems.append(templateItems[j]);
+            }
+        }
+        _renumberMissionItems(missionItems, 1);   // planned home is item 0
+
         QJsonObject root = templateRoot;
-        QJsonObject mission = root.value(QStringLiteral("mission")).toObject();
-        mission[QStringLiteral("items")] = waypointItems;
+        QJsonObject mission = templateMission;
+        mission[QStringLiteral("items")] = missionItems;
         root[QStringLiteral("mission")] = mission;
 
         const QString filename = dir.absoluteFilePath(QStringLiteral("%1-region_%2-waypoints.plan").arg(baseName).arg(i + 1));
