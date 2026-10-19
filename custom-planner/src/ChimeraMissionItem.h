@@ -99,7 +99,7 @@ public:
     ReadyForSaveState readyForSaveState() const override { return _error.isEmpty() ? ReadyForSave : NotReadyForSaveData; }
     void save(QJsonArray& items) override;
     bool load(const QJsonObject& json, int sequence, QString& error) override;
-    QString mapVisualQML() const override { return "qrc:/Planner/BlockMap.qml"; }
+    QString mapVisualQML() const override { return "qrc:/qml/Chimera/Planner/BlockMap.qml"; }
     void appendMissionItems(QList<MissionItem*>& items, QObject* parent) override;
     void applyNewAltitude(double altitude) override { setValue("altitude", altitude); }
     double additionalTimeDelay() const override { return _kind == "survey" ? 0 : _values.value("delay").toDouble(); }

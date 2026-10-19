@@ -247,12 +247,12 @@ Item {
         anchors.top: planToolBar.bottom
         anchors.horizontalCenter: parent.horizontalCenter
         active: _fleet !== null && _fleet.enabled
-        source: "qrc:/Planner/FleetBar.qml"
+        source: "qrc:/qml/Chimera/Planner/FleetBar.qml"
         onLoaded: item.fitRequested.connect(planMasterController.fitViewportToItems)
     }
     Loader {
         active: _fleet !== null && _fleet.enabled
-        source: "qrc:/Planner/FleetOverlay.qml"
+        source: "qrc:/qml/Chimera/Planner/FleetOverlay.qml"
         onLoaded: item.map = editorMap
     }
 

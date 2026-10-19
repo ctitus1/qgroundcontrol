@@ -192,7 +192,6 @@ bool ChimeraPlanner::buildSurvey(SurveyComplexItem* source, QList<MissionItem*>&
             items.append(new MissionItem(0, MAV_CMD_NAV_WAYPOINT, MAV_FRAME_GLOBAL_RELATIVE_ALT, 0,0,0,0,
                 c.latitude(), c.longitude(), source->cameraCalc()->distanceToSurface()->rawValue().toDouble(), true,false,owner));
         };
-        waypoint(center);
         for (const auto& pass : passes) {
             waypoint(pass.start);
             waypoint(pass.end);

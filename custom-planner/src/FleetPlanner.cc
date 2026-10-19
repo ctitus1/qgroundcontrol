@@ -2,6 +2,7 @@
 #include "AppMessages.h"
 #include "ChimeraMissionItem.h"
 #include "ChimeraPlanner.h"
+#include "CenterOut.h"
 #include "QGCMapPolygon.h"
 #include "QmlObjectListModel.h"
 #include "SimpleMissionItem.h"
@@ -81,6 +82,20 @@ bool loadPlan(PlanMasterController* child, const QJsonObject& plan, QString& err
     return child->missionController()->load(plan["mission"].toObject(),error)
         && child->geoFenceController()->load(plan["geoFence"].toObject(),error)
         && child->rallyPointController()->load(plan["rallyPoints"].toObject(),error);
+}
+void upgradeTrackAngle(QVariantMap& profile, const QJsonObject& plan)
+{
+    if (profile.contains("trackAngle")) return;
+    const bool automatic=profile.value("automaticHeading",false).toBool();
+    profile["automaticTrackAngle"]=automatic;
+    profile["trackAngle"]=CenterOut::normalizeAngle(profile["heading"].toDouble()+(automatic ? 90. : 0.));
+    if (automatic) return;
+    for (const auto& value : plan["mission"].toObject()["items"].toArray()) {
+        const auto item=value.toObject();
+        if (item["complexItemType"]!="chimera-survey" || item["fleetRegion"].toInt(-1)<0) continue;
+        profile["trackAngle"]=item["values"].toObject()["angle"].toDouble();
+        break;
+    }
 }
 QString color(int i) { return QStringList{"#00d8ef", "#ffb040", "#eb79c6", "#80d56b", "#a68cff", "#ff7865", "#d9d35b", "#73b5ff"}[i % 8]; }
 QList<ChimeraMissionItem*> blocks(PlanMasterController* plan) {
@@ -329,8 +344,7 @@ QString FleetPlanner::rebuildFleet(int count)
     for (int i=0; i<count; ++i) {
         auto profile=_archive[QString::number(i)].toObject()["profile"].toObject().toVariantMap();
         if (profile.isEmpty()) profile=defaultProfile(i,count);
-        if (profile.value("automaticHeading",false).toBool())
-            profile["heading"]=std::fmod(domain()->values()["yaw"].toDouble()+360.*i/count,360.);
+        upgradeTrackAngle(profile,_archive[QString::number(i)].toObject()["plan"].toObject());
         profiles.append(profile);
     }
     for (const auto& key : {QString("startRegion"),QString("uas")}) {
@@ -416,7 +430,7 @@ void FleetPlanner::setLayers(double minimum,double maximum,double maximumGap)
 void FleetPlanner::setProfile(int drone,const QString& key,double value,bool deferred)
 {
     if (drone<0 || drone>=_profiles.size() || !std::isfinite(value)) return;
-    const QMap<QString,QPair<double,double>> limits{{"heading",{0,359.99}},{"latitude",{-90,90}},{"longitude",{-180,180}},
+    const QMap<QString,QPair<double,double>> limits{{"heading",{0,359.99}},{"trackAngle",{0,359.99}},{"latitude",{-90,90}},{"longitude",{-180,180}},
         {"uas",{1,8}},{"startRegion",{0,double(_profiles.size()-1)}},{"cameraPreset",{-1,8}},
         {"altitude",{_minimum,_maximum}},{"speed",{0.01,100}},{"pitch",{-90,-0.01}},{"overlap",{0,94.99}},
         {"width",{1,100000}},{"height",{1,100000}},{"fx",{0.1,100000}},{"fy",{0.1,100000}},{"cx",{0,100000}},{"cy",{0,100000}}};
@@ -435,6 +449,7 @@ void FleetPlanner::setProfile(int drone,const QString& key,double value,bool def
     }
     profile[key]=value;
     if (key=="heading") profile["automaticHeading"]=false;
+    if (key=="trackAngle") profile["automaticTrackAngle"]=false;
     if (key=="altitude") profile["manualAltitude"]=true;
     if (key=="uas") profile["name"]=QString("UAS%1").arg(int(value));
     if (key=="cameraPreset") profile["cameraAutomatic"]=value<0;
@@ -457,12 +472,14 @@ void FleetPlanner::synchronize()
     if (auto* source=domain()) {
         const auto values=source->values();
         const double rotation=values["yaw"].toDouble()-_masterValues.value("yaw",values["yaw"]).toDouble();
+        const double trackRotation=values["angle"].toDouble()-_masterValues.value("angle",values["angle"]).toDouble();
         bool cameraChanged=_masterCamera!=source->cameraPreset();
         for (const auto& key : {"width","height","fx","fy","cx","cy"})
             cameraChanged |= values[key]!=_masterValues.value(key,values[key]);
         for (int i=0;i<_profiles.size();++i) {
             auto profile=_profiles[i].toMap();
-            profile["heading"]=std::fmod(profile["heading"].toDouble()+rotation+360.,360.);
+            profile["heading"]=CenterOut::normalizeAngle(profile["heading"].toDouble()+rotation);
+            profile["trackAngle"]=CenterOut::normalizeAngle(profile["trackAngle"].toDouble()+trackRotation);
             for (const auto& key : {"speed","pitch","overlap","width","height","fx","fy","cx","cy"})
                 if (values[key]!=_masterValues.value(key,values[key])) profile[key]=values[key];
             if (cameraChanged) {
@@ -494,7 +511,17 @@ void FleetPlanner::synchronize()
     if (!std::isfinite(homeAltitude)) { _error=tr("Set a finite master launch elevation."); notify(); return; }
     const auto searchCenter=partitionInput(_children.size()).center;
     for (int i=0;i<_children.size();++i) {
-        auto profile=_profiles[i].toMap(); const double altitude=assignedAltitude(i); profile["altitude"]=altitude; _profiles[i]=profile;
+        auto profile=_profiles[i].toMap();
+        const int startRegion=profile.value("startRegion",i).toInt();
+        if (startRegion<0 || startRegion>=polygons.size()) {
+            _error=tr("Assign each drone a valid starting region."); notify(); return;
+        }
+        const double inward=CenterOut::inwardHeading(polygons[startRegion],searchCenter);
+        if (profile.value("automaticHeading",false).toBool())
+            profile["heading"]=CenterOut::normalizeAngle(inward+domain()->values()["yaw"].toDouble());
+        if (profile.value("automaticTrackAngle",false).toBool())
+            profile["trackAngle"]=CenterOut::normalizeAngle(inward+domain()->values()["angle"].toDouble());
+        const double altitude=assignedAltitude(i); profile["altitude"]=altitude; _profiles[i]=profile;
         auto* mission=_children[i]->missionController(); auto* items=mission->visualItems();
         auto* settings=qobject_cast<MissionSettingsItem*>(items->get(0));
         QGeoCoordinate launch(profile["latitude"].toDouble(),profile["longitude"].toDouble(),homeAltitude);
@@ -509,6 +536,7 @@ void FleetPlanner::synchronize()
                 block->setSearchCenter(searchCenter);
                 if (block->surveyAreaPolygon()->coordinateList()!=polygons[block->fleetRegion()]) block->surveyAreaPolygon()->setPath(polygons[block->fleetRegion()]);
             }
+            if (block->kind()=="survey") block->setValue("angle",profile["trackAngle"].toDouble());
             if (block->kind()=="survey" || block->kind()=="vantage") block->setValue("transitSpeed",rapidTransitSpeed());
             if (block->fleetRegion()!=-1 || block->kind()=="survey" || block->kind()=="vantage") { block->setValue("altitude",altitude); block->setValue("yaw",profile["heading"].toDouble()); }
         }
@@ -560,6 +588,8 @@ void FleetPlanner::watch()
                     auto profile=_profiles[index].toMap();
                     const double heading=block->values()["yaw"].toDouble(), altitude=block->values()["altitude"].toDouble();
                     if (profile["heading"].toDouble()!=heading) { profile["heading"]=heading; profile["automaticHeading"]=false; }
+                    const double trackAngle=block->values()["angle"].toDouble();
+                    if (profile["trackAngle"].toDouble()!=trackAngle) { profile["trackAngle"]=trackAngle; profile["automaticTrackAngle"]=false; }
                     if (profile["altitude"].toDouble()!=altitude) { profile["altitude"]=altitude; profile["manualAltitude"]=true; }
                     _profiles[index]=profile;
                 });
@@ -691,6 +721,13 @@ void FleetPlanner::load(PlanMasterController* controller,const QJsonObject& plan
     if (domain()) { _partitionOrigin=domain()->centerCoordinate(); _partitionPolygon=domain()->surveyAreaPolygon()->coordinateList(); }
     _archive=fleet["archive"].toObject();
     _profiles=profiles;
+    const bool legacyAngles=std::all_of(_profiles.cbegin(),_profiles.cend(),[](const QVariant& profile) {
+        return !profile.toMap().contains("trackAngle");
+    });
+    if (legacyAngles && domain()->values()["angle"]==domain()->values()["yaw"]) {
+        QScopedValueRollback<bool> guard(_updating,true);
+        domain()->setValue("angle",CenterOut::normalizeAngle(domain()->values()["yaw"].toDouble()+90.));
+    }
     _masterValues=domain()->values(); _masterCamera=domain()->cameraPreset();
     if (auto* source=domain()) for (int i=0; i<_profiles.size(); ++i) {
         auto profile=_profiles[i].toMap();
@@ -711,6 +748,7 @@ void FleetPlanner::load(PlanMasterController* controller,const QJsonObject& plan
     }
     for (int i=0;i<_children.size();++i) {
         auto profile=_profiles[i].toMap(); auto defaults=defaultProfile(i,_children.size());
+        upgradeTrackAngle(profile,plans[i].toObject());
         if (!profile.contains("cameraPreset")) for (auto* block : blocks(_children[i])) if (block->fleetRegion()>=0) {
             defaults["startRegion"]=block->fleetRegion(); defaults["cameraPreset"]=block->cameraPreset(); defaults["cameraAutomatic"]=false;
             for (const auto& key : {"speed","pitch","overlap","width","height","fx","fy","cx","cy"}) defaults[key]=block->values()[key];
@@ -760,9 +798,13 @@ QVariantMap FleetPlanner::defaultProfile(int drone, int count) const
 {
     auto* source=domain();
     const auto home=_master->missionController()->plannedHomePosition();
+    QString error;
+    const auto polygons=regions(error,count);
+    const double inward=drone<polygons.size() ? CenterOut::inwardHeading(polygons[drone],partitionInput(count).center) : 0.;
     QVariantMap profile{{"name",QString("UAS%1").arg(drone+1)},{"uas",drone+1},{"startRegion",drone},
         {"color",color(drone)},{"latitude",home.latitude()},{"longitude",home.longitude()},
-        {"automaticHeading",true},{"heading",std::fmod(source->values()["yaw"].toDouble()+360.*drone/count,360.)},
+        {"automaticHeading",true},{"heading",CenterOut::normalizeAngle(inward+source->values()["yaw"].toDouble())},
+        {"automaticTrackAngle",true},{"trackAngle",CenterOut::normalizeAngle(inward+source->values()["angle"].toDouble())},
         {"cameraAutomatic",true}};
     for (const auto& key : {"speed","pitch","overlap","width","height","fx","fy","cx","cy"}) profile[key]=source->values()[key];
     updateCamera(profile);

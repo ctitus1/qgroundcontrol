@@ -103,13 +103,13 @@ ChimeraMissionItem::ChimeraMissionItem(PlanMasterController* master, bool flyVie
 {
     _survey->setParent(this);
     _flightSurvey->setParent(this);
-    _editorQml = "qrc:/Planner/BlockEditor.qml";
+    _editorQml = "qrc:/qml/Chimera/Planner/BlockEditor.qml";
     _values = planner->settings(nullptr);
     _values["enabled"] = true;
     _values["altitude"] = SettingsManager::instance()->appSettings()->defaultMissionItemAltitude()->rawValue();
     _values["speed"] = 1.;
     _values["delay"] = 60.;
-    _values["angle"] = 0.;
+    _values["angle"] = 90.;
     _values["pitch"] = -70.;
     _values["entryPoint"] = 0.;
     _values["radius"] = 2.;
@@ -285,12 +285,8 @@ void ChimeraMissionItem::setValue(const QString& key, double value)
     }
     if (splitPart() && key != "speed") return;
     if (!_values.contains(key)) return;
-    const bool angle = isSurveyItem() && (key == "yaw" || key == "angle");
-    if (_values[key] == value && (!angle || (_values["yaw"] == value && _values["angle"] == value))) return;
-    if (angle) {
-        if (value < 0 || value >= 360) return;
-        _values["yaw"] = value; _values["angle"] = value;
-    }
+    if ((key == "yaw" || key == "angle") && (value < 0 || value >= 360)) return;
+    if (_values[key] == value) return;
     if (QStringList{"width", "height", "fx", "fy", "cx", "cy"}.contains(key)) _cameraPreset.clear();
     _values[key] = value;
     rebuild(); syncSurvey();

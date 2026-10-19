@@ -6,6 +6,20 @@
 #include <cmath>
 
 namespace CenterOut {
+inline double normalizeAngle(double angle)
+{
+    const double normalized = std::fmod(angle, 360.);
+    return normalized < 0 ? normalized + 360. : normalized;
+}
+
+inline double inwardHeading(const QList<QGeoCoordinate>& sector, const QGeoCoordinate& center)
+{
+    if (sector.size() < 3 || !center.isValid()) return 0;
+    const double start = center.azimuthTo(sector[1]);
+    const double sweep = normalizeAngle(start - center.azimuthTo(sector.last()));
+    return normalizeAngle(start - sweep / 2 + 180.);
+}
+
 struct Pass { QGeoCoordinate start, end; double distance; };
 inline QList<Pass> passes(const QList<QPair<QGeoCoordinate, QGeoCoordinate>>& legs,
                          const QGeoCoordinate& center, double heading, bool reverseEntry = false)

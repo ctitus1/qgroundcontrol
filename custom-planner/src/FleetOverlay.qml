@@ -2,6 +2,7 @@ import QtQuick
 import QtLocation
 import QtPositioning
 import QGroundControl
+import QGroundControl.PlanView
 import QGroundControl.FlightMap
 import QGroundControl.Controls
 

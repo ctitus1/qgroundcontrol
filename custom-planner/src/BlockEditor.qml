@@ -18,8 +18,12 @@ Rectangle {
     property real margin: ScreenTools.defaultFontPixelHeight / 2
     property real fieldWidth: Math.min(Math.max(120, ScreenTools.defaultFontPixelWidth * 18), (width - margin * 2) * 0.62)
     property string notice: ""
-    property real pendingHeading: 0
-    Timer { id: headingUpdate; interval: 50; onTriggered: root.block.setValue("yaw", root.pendingHeading) }
+
+    function angleLabel(key) {
+        if (fleetMasterSource)
+            return key === "yaw" ? qsTr("Aircraft heading offset") : qsTr("Track angle offset")
+        return key === "yaw" ? qsTr("Aircraft heading") : qsTr("Track angle")
+    }
     QGCPalette { id: qgcPal; colorGroupEnabled: root.enabled }
 
     ColumnLayout {
@@ -40,7 +44,7 @@ Rectangle {
             Layout.fillWidth: true; Layout.minimumWidth: 0
             font.pointSize: ScreenTools.smallFontPointSize
             wrapMode: Text.WordWrap
-            text: root.fleetMasterSource ? qsTr("Edit the shared area, fleet setup, and flight defaults here. Master heading changes rotate all drone paths.") : root.block.kind === "survey" ? (root.block.linkedSurvey ? qsTr("Edits apply to the whole linked survey.") : qsTr("The polygon defines the ground area to cover.")) :
+            text: root.fleetMasterSource ? qsTr("Edit the shared area, fleet setup, and flight defaults here. Master heading and track angle adjust the drones independently.") : root.block.kind === "survey" ? (root.block.linkedSurvey ? qsTr("Edits apply to the whole linked survey.") : qsTr("The polygon defines the ground area to cover.")) :
                   root.block.kind === "vantage" ? qsTr("Delay until 1 s arms vantage autonomy. 5g_drone controls the gimbal.") : qsTr("5g_drone controls the gimbal. Delay until is separate from waypoint hold time.")
         }
         RowLayout {
@@ -66,7 +70,7 @@ Rectangle {
                     visible: !root.fleetMasterSource || modelData[0] !== "altitude"
                     Layout.fillWidth: true
                     spacing: root.margin / 2
-                    QGCLabel { text: modelData[1]; Layout.fillWidth: true; Layout.minimumWidth: 0; wrapMode: Text.Wrap }
+                    QGCLabel { text: ["yaw", "angle"].indexOf(modelData[0]) >= 0 ? root.angleLabel(modelData[0]) : modelData[1]; Layout.fillWidth: true; Layout.minimumWidth: 0; wrapMode: Text.Wrap }
                     FactTextField {
                         objectName: "field_" + modelData[0]
                         Layout.preferredWidth: root.fieldWidth
@@ -79,29 +83,45 @@ Rectangle {
                 }
             }
         }
-        QGCSlider {
-            id: headingSlider
-            objectName: "headingSlider"
-            visible: root.block.kind === "survey" && flightHeader.checked
-            enabled: !root.block.splitPart && root.block.fleetRegion >= -1
-            Layout.fillWidth: true
-            from: 0; to: 359; stepSize: 1
-            Binding {
-                target: headingSlider
-                property: "value"
-                value: root.block.values.yaw
-                when: !headingSlider.pressed
-                restoreMode: Binding.RestoreNone
+        Repeater {
+            model: ["yaw", "angle"]
+            delegate: ColumnLayout {
+                id: angleControl
+                required property string modelData
+                property real pendingValue: 0
+                function commit() { root.block.setValue(modelData, pendingValue) }
+                Layout.fillWidth: true
+                visible: root.block.kind === "survey" && flightHeader.checked
+                QGCLabel { text: root.angleLabel(angleControl.modelData) }
+                QGCSlider {
+                    id: angleSlider
+                    objectName: angleControl.modelData === "yaw" ? "headingSlider" : "trackSlider"
+                    enabled: !root.block.splitPart && root.block.fleetRegion >= -1
+                    Layout.fillWidth: true
+                    from: 0; to: 359; stepSize: 1
+                    Binding {
+                        target: angleSlider
+                        property: "value"
+                        value: root.block.values[angleControl.modelData]
+                        when: !angleSlider.pressed
+                        restoreMode: Binding.RestoreNone
+                    }
+                    onMoved: { angleControl.pendingValue = value; if (!angleUpdate.running) angleUpdate.start() }
+                    onPressedChanged: if (!pressed && angleUpdate.running) { angleUpdate.stop(); angleControl.commit() }
+                    Accessible.name: root.angleLabel(angleControl.modelData)
+                }
+                Timer {
+                    id: angleUpdate
+                    interval: 50
+                    onTriggered: angleControl.commit()
+                }
             }
-            onMoved: { root.pendingHeading = value; if (!headingUpdate.running) headingUpdate.start() }
-            onPressedChanged: if (!pressed && headingUpdate.running) { headingUpdate.stop(); root.block.setValue("yaw", root.pendingHeading) }
-            Accessible.name: qsTr("Heading and track angle")
         }
         QGCLabel {
             visible: root.block.kind === "survey" && flightHeader.checked
             Layout.fillWidth: true; wrapMode: Text.WordWrap
             font.pointSize: ScreenTools.smallFontPointSize
-            text: qsTr("Heading and track angle change together.")
+            text: qsTr("Aircraft heading and track angle are independent. Fleet defaults face the shared sector junction and fly across that heading.")
         }
         QGCButton {
             text: qsTr("Rotate entry point")
@@ -169,12 +189,12 @@ Rectangle {
         Loader {
             Layout.fillWidth: true
             active: chimeraFleet.enabled && root.block.kind === "survey"
-            source: "qrc:/Planner/FleetSettings.qml"
+            source: "qrc:/qml/Chimera/Planner/FleetSettings.qml"
         }
         Loader {
             Layout.fillWidth: true
             active: root.block.kind === "survey" && root.block.fleetRegion === -1 && !chimeraFleet.enabled
-            source: "qrc:/Planner/FleetSetup.qml"
+            source: "qrc:/qml/Chimera/Planner/FleetSetup.qml"
             onLoaded: item.sourceSurvey = root.block
         }
         QGCLabel {

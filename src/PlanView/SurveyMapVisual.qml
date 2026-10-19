@@ -13,7 +13,7 @@ TransectStyleMapVisuals {
     polygonInteractive: true
     Loader {
         active: typeof chimeraPlanner !== "undefined"
-        source: "qrc:/Planner/SurveyOverlay.qml"
+        source: "qrc:/qml/Chimera/Planner/SurveyOverlay.qml"
         onLoaded: { item.map = _root.map; item.survey = _root._missionItem }
     }
 }

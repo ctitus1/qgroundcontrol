@@ -19,7 +19,7 @@ TransectStyleComplexItemEditor {
         Loader {
             width: parent ? parent.width : 0
             active: typeof chimeraPlanner !== "undefined"
-            source: "qrc:/Planner/SurveyEditor.qml"
+            source: "qrc:/qml/Chimera/Planner/SurveyEditor.qml"
             onLoaded: item.survey = missionItem
         }
     }

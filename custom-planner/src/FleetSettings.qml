@@ -188,7 +188,7 @@ ColumnLayout {
                         wrapMode: Text.WordWrap
                     }
                     Repeater {
-                        model: [["Heading / track angle (deg)", "heading", 0, 359.99], ["Altitude (m)", "altitude", chimeraFleet.minimum, chimeraFleet.maximum], ["Speed (m/s)", "speed", 0.01, 100], ["Gimbal pitch (deg)", "pitch", -90, -0.01], ["Side overlap (%)", "overlap", 0, 94.99], ["Takeoff latitude", "latitude", -90, 90], ["Takeoff longitude", "longitude", -180, 180]]
+                        model: [["Aircraft heading (deg)", "heading", 0, 359.99], ["Track angle (deg)", "trackAngle", 0, 359.99], ["Altitude (m)", "altitude", chimeraFleet.minimum, chimeraFleet.maximum], ["Speed (m/s)", "speed", 0.01, 100], ["Gimbal pitch (deg)", "pitch", -90, -0.01], ["Side overlap (%)", "overlap", 0, 94.99], ["Takeoff latitude", "latitude", -90, 90], ["Takeoff longitude", "longitude", -180, 180]]
                         delegate: RowLayout {
                             required property var modelData
                             QGCLabel {
@@ -211,23 +211,31 @@ ColumnLayout {
                             }
                         }
                     }
-                    QGCSlider {
-                        id: profileHeadingSlider
-                        Layout.fillWidth: true
-                        from: 0
-                        to: 359
-                        stepSize: 1
-                        Binding {
-                            target: profileHeadingSlider
-                            property: "value"
-                            value: profile.heading || 0
-                            when: !profileHeadingSlider.pressed
-                            restoreMode: Binding.RestoreNone
+                    Repeater {
+                        model: [["heading", qsTr("Aircraft heading")], ["trackAngle", qsTr("Track angle")]]
+                        delegate: ColumnLayout {
+                            id: profileAngleControl
+                            required property var modelData
+                            Layout.fillWidth: true
+                            QGCLabel { text: profileAngleControl.modelData[1] }
+                            QGCSlider {
+                                id: profileAngleSlider
+                                Layout.fillWidth: true
+                                from: 0
+                                to: 359
+                                stepSize: 1
+                                Binding {
+                                    target: profileAngleSlider
+                                    property: "value"
+                                    value: profile[profileAngleControl.modelData[0]] || 0
+                                    when: !profileAngleSlider.pressed
+                                    restoreMode: Binding.RestoreNone
+                                }
+                                onMoved: chimeraFleet.setProfile(drone, profileAngleControl.modelData[0], value, true)
+                                onPressedChanged: if (!pressed) chimeraFleet.synchronize()
+                                Accessible.name: profileAngleControl.modelData[1]
+                            }
                         }
-                        onMoved: chimeraFleet.setProfile(drone, "heading", value, true)
-                        onPressedChanged: if (!pressed)
-                            chimeraFleet.synchronize()
-                        Accessible.name: qsTr("Fixed aircraft heading and track angle")
                     }
                     QGCComboBox {
                         Layout.fillWidth: true

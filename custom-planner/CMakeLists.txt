@@ -1,3 +1,24 @@
+qt_add_library(ChimeraPlannerModule STATIC)
+
+set(planner_qml_files
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/BlockEditor.qml
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/BlockMap.qml
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/FleetBar.qml
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/FleetOverlay.qml
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/FleetSettings.qml
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/FleetSetup.qml
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/SurveyEditor.qml
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/SurveyOverlay.qml
+)
+qgc_set_qt_resource_alias(${planner_qml_files})
+qt_add_qml_module(ChimeraPlannerModule
+    URI Chimera.Planner
+    VERSION 1.0
+    RESOURCE_PREFIX /qml
+    QML_FILES ${planner_qml_files}
+    NO_PLUGIN
+)
+
 set(CUSTOM_DEFINITIONS QGC_CUSTOM_BUILD CUSTOMHEADER="CustomPlugin.h" CUSTOMCLASS=CustomPlugin CACHE INTERNAL "" FORCE)
 set(QGC_RESOURCES ${CMAKE_CURRENT_SOURCE_DIR}/planner.qrc CACHE STRING "Custom resources" FORCE)
 set(CUSTOM_SOURCES
@@ -12,7 +33,7 @@ set(CUSTOM_SOURCES
     ${CMAKE_CURRENT_SOURCE_DIR}/src/ChimeraMissionItem.h
     CACHE INTERNAL "" FORCE)
 set(CUSTOM_INCLUDE_DIRECTORIES ${CMAKE_CURRENT_SOURCE_DIR}/src CACHE INTERNAL "" FORCE)
-set(CUSTOM_LIBRARIES "" CACHE INTERNAL "" FORCE)
+set(CUSTOM_LIBRARIES ChimeraPlannerModule CACHE INTERNAL "" FORCE)
 
 option(QGC_PLANNER_SMOKE_TEST "Enable the offline planner function check" OFF)
 if(QGC_PLANNER_SMOKE_TEST)

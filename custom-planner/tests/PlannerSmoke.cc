@@ -102,11 +102,12 @@ void schedulePlannerSmoke(QQmlApplicationEngine* engine, ChimeraPlanner*)
             survey->setValue("fx", 1200);
             check(survey->cameraPreset() == 0, "Manual camera edit selects Custom");
             survey->setCameraPreset(5);
+            const auto originalHeading=survey->values()["yaw"];
             survey->setValue("angle", 19);
-            check(survey->values()["yaw"].toDouble() == 19, "Track angle changes heading");
+            check(survey->values()["yaw"] == originalHeading, "Track angle leaves aircraft heading unchanged");
             fiducial->setValue("delay", 45); fiducial->setValue("yaw", 23);
             survey->setValue("yaw", 37); survey->setValue("pitch", -50);
-            check(survey->values()["angle"].toDouble() == 37, "Heading changes track angle");
+            check(survey->values()["angle"].toDouble() == 19, "Aircraft heading leaves track angle unchanged");
             check(survey->error().isEmpty(), survey->error());
             check(survey->preview()["offset"].toDouble() > 10, "Offset path");
             const auto checkpoint = survey->preview()["path"].toList()[1].value<QGeoCoordinate>();
@@ -162,10 +163,10 @@ void schedulePlannerSmoke(QQmlApplicationEngine* engine, ChimeraPlanner*)
             context.setContextProperty("missionItem", survey);
             context.setContextProperty("availableWidth", 420);
             context.setContextProperty("object", survey);
-            QQmlComponent editor(engine, QUrl("qrc:/Planner/BlockEditor.qml"));
+            QQmlComponent editor(engine, QUrl("qrc:/qml/Chimera/Planner/BlockEditor.qml"));
             check(editor.isReady(), editor.errorString());
             auto* widget = editor.createWithInitialProperties({{"missionItem", context.contextProperty("missionItem")}, {"availableWidth", context.contextProperty("availableWidth")}}, &context); check(widget, editor.errorString()); delete widget;
-            QQmlComponent map(engine, QUrl("qrc:/Planner/BlockMap.qml"));
+            QQmlComponent map(engine, QUrl("qrc:/qml/Chimera/Planner/BlockMap.qml"));
             check(map.isReady(), map.errorString());
             QQmlComponent canvas(engine);
             canvas.setData("import QtQuick; import QtLocation; Map { width: 600; height: 400; property bool planView: true; property rect centerViewport: Qt.rect(0, 0, 600, 400) }", QUrl());
@@ -361,29 +362,37 @@ void schedulePlannerSmoke(QQmlApplicationEngine* engine, ChimeraPlanner*)
             fleet.synchronize();
             check(fleet.validate().isEmpty(), fleet.validate());
             check(fleet.separation() == 10 && fleet.drones()[2].toMap()["altitude"].toDouble() == 50, "Maximum vertical gap caps assigned layers");
+            const double initialHeading0=fleet.drones()[0].toMap()["heading"].toDouble();
+            const double initialHeading1=fleet.drones()[1].toMap()["heading"].toDouble();
+            const double initialTrack0=fleet.drones()[0].toMap()["trackAngle"].toDouble();
             for (int drone = 0; drone < 3; ++drone) {
                 fleet.setSelected(drone + 1);
                 auto* items = fleet.activeController()->missionController()->visualItems();
                 auto* droneFiducial=qobject_cast<ChimeraMissionItem*>(items->get(2));
-                const auto expectedFiducial=origin.atDistanceAndAzimuth(2,120*drone+180);
+                const auto profile=fleet.drones()[drone].toMap();
+                const auto expectedFiducial=origin.atDistanceAndAzimuth(2,profile["heading"].toDouble()+180);
+                check(std::abs(CenterOut::normalizeAngle(profile["trackAngle"].toDouble()-profile["heading"].toDouble())-90)<1e-6,"Default tracks cross the aircraft heading");
                 check(droneFiducial->coordinate().distanceTo(expectedFiducial)<0.01,"Fiducial offset follows the drone heading");
                 check(droneFiducial->coordinate().altitude()==30+10*drone,"Fiducial uses the survey altitude layer");
                 for (int phase = 0; phase < 3; ++phase) {
                     auto* region = qobject_cast<ChimeraMissionItem*>(items->get(3 + phase));
                     check(region && region->fleetRegion() == (drone + phase) % 3 && region->centerOut(), "Rotated region assignment");
-                    check(region->values()["yaw"].toDouble() == 120 * drone && region->values()["altitude"].toDouble() == 30 + 10 * drone, "Independent heading and automatic altitude");
-                    check(region->route().size() >= 3, "Center-first route generated");
+                    check(region->values()["yaw"] == profile["heading"] && region->values()["altitude"].toDouble() == 30 + 10 * drone, "Independent heading and automatic altitude");
+                    check(region->route().size() >= 2, "Center-first route generated");
+                    check(region->values()["angle"]==profile["trackAngle"],"Each region uses the drone track angle");
                     check(region->searchCenter().distanceTo(fleet.controlPoints().first().value<QGeoCoordinate>())<0.01,"Every region uses the shared partition center");
-                    auto* firstRegion=qobject_cast<ChimeraMissionItem*>(items->get(3));
-                    check(region->coordinate().distanceTo(firstRegion->coordinate())<0.01,"Each drone starts all regions at the same camera-offset shared center");
+                    const auto route=region->preview()["path"].toList();
+                    check(region->coordinate().distanceTo(route.first().value<QGeoCoordinate>())<0.01,"Survey starts at its first flight leg");
+                    check(route.size()%2==0,"Survey contains complete track pairs without an extra center waypoint");
                 }
             }
             domain->setValue("yaw",30); fleet.synchronize();
-            check(fleet.drones()[0].toMap()["heading"].toDouble()==30 && fleet.drones()[1].toMap()["heading"].toDouble()==150,"Master heading rotates all drone paths");
+            check(std::abs(fleet.drones()[0].toMap()["heading"].toDouble()-CenterOut::normalizeAngle(initialHeading0+30))<1e-6 && std::abs(fleet.drones()[1].toMap()["heading"].toDouble()-CenterOut::normalizeAngle(initialHeading1+30))<1e-6,"Master heading rotates aircraft independently of tracks");
+            check(std::abs(fleet.drones()[0].toMap()["trackAngle"].toDouble()-initialTrack0)<1e-6,"Master aircraft heading preserves track angle");
             fleet.setSelected(1);
             auto* headingRegion=qobject_cast<ChimeraMissionItem*>(fleet.activeController()->missionController()->visualItems()->get(3));
             headingRegion->setValue("yaw",45); fleet.synchronize();
-            check(fleet.drones()[0].toMap()["heading"].toDouble()==45 && fleet.drones()[1].toMap()["heading"].toDouble()==150,"Drone editor changes heading independently");
+            check(fleet.drones()[0].toMap()["heading"].toDouble()==45 && std::abs(fleet.drones()[1].toMap()["heading"].toDouble()-CenterOut::normalizeAngle(initialHeading1+30))<1e-6,"Drone editor changes heading independently");
             domain->setValue("yaw",60); fleet.synchronize();
             check(headingRegion->values()["yaw"].toDouble()==75,"Master rotation preserves a drone heading offset");
             headingRegion->setValue("altitude",32); fleet.synchronize();
@@ -473,7 +482,7 @@ void schedulePlannerSmoke(QQmlApplicationEngine* engine, ChimeraPlanner*)
             childMission = fleet.activeController()->missionController();
             region = qobject_cast<ChimeraMissionItem*>(childMission->visualItems()->get(3));
             check(childMission->visualItems()->count() == countBefore && region->cameraPreset() == 2 && region->linkedSurvey(), "Count changes preserve splits, inspection items, and camera overrides");
-            check(fleet.drones()[0].toMap()["heading"].toDouble() == 45 && fleet.drones()[1].toMap()["heading"].toDouble() == 120, "Count changes preserve custom headings and redistribute default headings");
+            check(fleet.drones()[0].toMap()["heading"].toDouble() == 45 && fleet.drones()[1].toMap()["automaticHeading"].toBool(), "Count changes preserve custom headings and redistribute default headings");
             fleet.setSelected(3);
             auto* archivedRegion = qobject_cast<ChimeraMissionItem*>(fleet.activeController()->missionController()->visualItems()->get(3));
             archivedRegion->setValue("speed", 2.5);
@@ -573,10 +582,10 @@ void schedulePlannerSmoke(QQmlApplicationEngine* engine, ChimeraPlanner*)
             check(ChimeraPlanner().exportMission(&plainController,"/tmp/chimera-single-bundle.plan").isEmpty(),"Export standalone editable and plain plans");
             check(QFile::exists("/tmp/chimera-single-bundle.plan") && QFile::exists("/tmp/chimera-single-bundle-plain.plan"),"Standalone export saves both formats");
             context.setContextProperty("chimeraFleet", &fleet);
-            QQmlComponent fleetBar(engine, QUrl("qrc:/Planner/FleetBar.qml"));
+            QQmlComponent fleetBar(engine, QUrl("qrc:/qml/Chimera/Planner/FleetBar.qml"));
             check(fleetBar.isReady(), fleetBar.errorString());
             auto* fleetWidget = fleetBar.create(&context); check(fleetWidget, fleetBar.errorString()); delete fleetWidget;
-            QQmlComponent fleetOverlay(engine, QUrl("qrc:/Planner/FleetOverlay.qml"));
+            QQmlComponent fleetOverlay(engine, QUrl("qrc:/qml/Chimera/Planner/FleetOverlay.qml"));
             check(fleetOverlay.isReady(), fleetOverlay.errorString());
             auto* fleetMap = canvas.create(&context);
             fleetWidget = fleetOverlay.createWithInitialProperties({{"map", QVariant::fromValue(fleetMap)}}, &context);
