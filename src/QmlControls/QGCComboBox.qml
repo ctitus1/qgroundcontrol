@@ -23,7 +23,10 @@ T.ComboBox {
     leftPadding: padding + (!control.mirrored || !indicator || !indicator.visible ? 0 : indicator.width + spacing)
     rightPadding: padding + (control.mirrored || !indicator || !indicator.visible ? 0 : indicator.width)
 
-    property real _popupWidth: width
+    readonly property real _popupWidth: {
+        const preferredWidth = sizeToContents ? Math.max(width, _largestTextWidth + itemDelegateMetrics.leftPadding + itemDelegateMetrics.rightPadding) : width
+        return control.Window.width > 0 ? Math.min(preferredWidth, control.Window.width) : preferredWidth
+    }
     property real _largestTextWidth: 0
     property bool _onCompleted: false
     property bool _showBorder: qgcPal.globalTheme === QGCPalette.Light
@@ -51,12 +54,13 @@ T.ComboBox {
                 textMetrics.text = control.textAt(i)
                 _largestTextWidth = Math.max(textMetrics.width, _largestTextWidth)
             }
-            _popupWidth = _largestTextWidth + itemDelegateMetrics.leftPadding + itemDelegateMetrics.rightPadding
         }
     }
 
     onModelChanged: _calcPopupWidth()
     onCountChanged: _calcPopupWidth()
+    onSizeToContentsChanged: _calcPopupWidth()
+    onFontChanged: _calcPopupWidth()
 
     Component.onCompleted: {
         _onCompleted = true
@@ -83,6 +87,7 @@ T.ComboBox {
             font: control.font
             color: control.currentIndex === index ? qgcPal.buttonHighlightText : qgcPal.buttonText
             verticalAlignment: Text.AlignVCenter
+            elide: Text.ElideRight
         }
 
         background: Rectangle {

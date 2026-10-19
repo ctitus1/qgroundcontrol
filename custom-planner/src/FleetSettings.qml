@@ -6,6 +6,7 @@ import QGroundControl.Controls
 ColumnLayout {
     id: root
     objectName: "fleetSettings"
+    readonly property real fieldWidth: Math.min(ScreenTools.defaultFontPixelWidth * 16, width * 0.55)
     property bool master: chimeraFleet.selected === 0
     spacing: ScreenTools.defaultFontPixelHeight / 2
     SectionHeader {
@@ -27,9 +28,12 @@ ColumnLayout {
                     Layout.fillWidth: true
                 }
                 QGCComboBox {
+                    sizeToContents: true
                     model: [2, 3, 4, 5, 6, 7, 8]
                     currentIndex: chimeraFleet.drones.length - 2
-                    Layout.preferredWidth: 100
+                    Layout.preferredWidth: root.fieldWidth
+                    Layout.minimumWidth: 0
+                    Layout.maximumWidth: root.fieldWidth
                     onActivated: index => {
                         const error = chimeraFleet.setCount(index + 2);
                         if (error)
@@ -49,11 +53,12 @@ ColumnLayout {
                     Layout.fillWidth: true
                 }
                 QGCComboBox {
+                    sizeToContents: true
                     model: [qsTr("Day / visible"), qsTr("Night / thermal")]
                     currentIndex: chimeraFleet.night ? 1 : 0
-                    Layout.preferredWidth: root.width * 0.55
+                    Layout.preferredWidth: root.fieldWidth
                     Layout.minimumWidth: 0
-                    Layout.maximumWidth: root.width * 0.55
+                    Layout.maximumWidth: root.fieldWidth
                     onActivated: index => chimeraFleet.night = index === 1
                 }
             }
@@ -75,7 +80,7 @@ ColumnLayout {
                     wrapMode: Text.WordWrap
                 }
                 QGCTextField {
-                    Layout.preferredWidth: 100
+                    Layout.preferredWidth: root.fieldWidth
                     text: String(chimeraFleet.fiducialRadius)
                     validator: DoubleValidator {
                         bottom: 0
@@ -92,7 +97,7 @@ ColumnLayout {
                     wrapMode: Text.WordWrap
                 }
                 QGCTextField {
-                    Layout.preferredWidth: 100
+                    Layout.preferredWidth: root.fieldWidth
                     text: String(chimeraFleet.rapidTransitSpeed)
                     validator: DoubleValidator {
                         bottom: 0.1
@@ -116,7 +121,7 @@ ColumnLayout {
                         wrapMode: Text.WordWrap
                     }
                     QGCTextField {
-                        Layout.preferredWidth: 100
+                        Layout.preferredWidth: root.fieldWidth
                         text: String(chimeraFleet[modelData[1]])
                         validator: DoubleValidator {
                             bottom: 0
@@ -155,11 +160,12 @@ ColumnLayout {
                             Layout.fillWidth: true
                         }
                         QGCComboBox {
+                            sizeToContents: true
                             model: ["UAS1", "UAS2", "UAS3", "UAS4", "UAS5", "UAS6", "UAS7", "UAS8"]
                             currentIndex: (profile.uas || drone + 1) - 1
-                            Layout.preferredWidth: root.width * 0.55
+                            Layout.preferredWidth: root.fieldWidth
                             Layout.minimumWidth: 0
-                            Layout.maximumWidth: root.width * 0.55
+                            Layout.maximumWidth: root.fieldWidth
                             onActivated: index => chimeraFleet.setProfile(drone, "uas", index + 1)
                         }
                     }
@@ -169,13 +175,14 @@ ColumnLayout {
                             Layout.fillWidth: true
                         }
                         QGCComboBox {
+                            sizeToContents: true
                             model: Array.from({
                                 length: chimeraFleet.drones.length
                             }, (_, n) => "R" + (n + 1))
                             currentIndex: profile.startRegion || 0
-                            Layout.preferredWidth: root.width * 0.55
+                            Layout.preferredWidth: root.fieldWidth
                             Layout.minimumWidth: 0
-                            Layout.maximumWidth: root.width * 0.55
+                            Layout.maximumWidth: root.fieldWidth
                             onActivated: index => chimeraFleet.setProfile(drone, "startRegion", index)
                         }
                     }
@@ -198,9 +205,9 @@ ColumnLayout {
                                 wrapMode: Text.WordWrap
                             }
                             QGCTextField {
-                                Layout.preferredWidth: root.width * 0.55
+                                Layout.preferredWidth: root.fieldWidth
                                 Layout.minimumWidth: 0
-                                Layout.maximumWidth: root.width * 0.55
+                                Layout.maximumWidth: root.fieldWidth
                                 text: Number(profile[modelData[1]]).toFixed(["latitude", "longitude"].indexOf(modelData[1]) >= 0 ? 7 : 2)
                                 validator: DoubleValidator {
                                     bottom: modelData[2]
@@ -238,9 +245,9 @@ ColumnLayout {
                         }
                     }
                     QGCComboBox {
+                        sizeToContents: true
                         Layout.fillWidth: true
                         Layout.minimumWidth: 0
-                        sizeToContents: true
                         model: [qsTr("Automatic day/night camera")].concat(chimeraFleet.cameraPresets.map(p => p.label))
                         currentIndex: profile.cameraAutomatic ? 0 : Number(profile.cameraPreset || 0) + 1
                         onActivated: index => chimeraFleet.setProfile(drone, "cameraPreset", index - 1)
@@ -277,9 +284,9 @@ ColumnLayout {
                                     Layout.fillWidth: true
                                 }
                                 QGCTextField {
-                                    Layout.preferredWidth: root.width * 0.55
+                                    Layout.preferredWidth: root.fieldWidth
                                     Layout.minimumWidth: 0
-                                    Layout.maximumWidth: root.width * 0.55
+                                    Layout.maximumWidth: root.fieldWidth
                                     text: String(profile[modelData])
                                     validator: DoubleValidator {
                                         bottom: 0
@@ -302,7 +309,11 @@ ColumnLayout {
                     }
                     RowLayout {
                         QGCComboBox {
+                            sizeToContents: true
                             id: inspectRegion
+                            Layout.minimumWidth: 0
+                            Layout.preferredWidth: ScreenTools.defaultFontPixelWidth * 5
+                            Accessible.name: qsTr("Region to edit")
                             model: Array.from({
                                 length: chimeraFleet.drones.length
                             }, (_, n) => "R" + (n + 1))

@@ -20,6 +20,7 @@ Rectangle {
         spacing: root.margin
         QGCComboBox {
             objectName: "fleetSelector"
+            sizeToContents: true
             model: [qsTr("Master")].concat(chimeraFleet.drones.map(d => d.name))
             currentIndex: chimeraFleet.selected
             onActivated: index => { chimeraFleet.selected = index; root.fitRequested() }
