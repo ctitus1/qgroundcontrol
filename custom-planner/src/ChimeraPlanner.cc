@@ -1,3 +1,4 @@
+#include <algorithm>
 #include <memory>
 #include "ChimeraPlanner.h"
 #include "ChimeraMissionItem.h"
@@ -240,12 +241,12 @@ QString ChimeraPlanner::exportPlan(QObject* item, const QString& filename)
             visual->appendMissionItems(compiled, &owner);
         }
         auto* block = qobject_cast<ChimeraMissionItem*>(visual);
-        if (block && block->kind() == "survey") {
+        if (block && (block->kind() == "survey" || block->kind() == "vantage")) {
             int firstWaypoint = -1, firstArm = -1, firstSpeed = -1;
             for (int j = firstCommand; j < compiled.size(); ++j) {
                 const auto command = compiled[j]->command();
                 if (firstWaypoint < 0 && command == MAV_CMD_NAV_WAYPOINT) firstWaypoint = j;
-                if (firstArm < 0 && command == MAV_CMD_NAV_DELAY && compiled[j]->param1() == 0) firstArm = j;
+                if (firstArm < 0 && command == MAV_CMD_NAV_DELAY && compiled[j]->param1() == (block->kind() == "vantage" ? 1 : 0)) firstArm = j;
                 if (firstSpeed < 0 && command == MAV_CMD_DO_CHANGE_SPEED) firstSpeed = j;
             }
             const double transitSpeed = block->values()["transitSpeed"].toDouble();
@@ -253,9 +254,11 @@ QString ChimeraPlanner::exportPlan(QObject* item, const QString& filename)
                 compiled[firstSpeed]->setParam2(transitSpeed);
             } else if (firstWaypoint >= 0) {
                 auto* entry = new MissionItem(*compiled[firstWaypoint], &owner);
-                const int insertion = firstSpeed >= 0 ? firstSpeed : firstCommand;
+                const int insertion = firstSpeed >= 0 && firstArm >= 0 ? std::min(firstSpeed, firstArm) : firstCommand;
                 compiled.insert(insertion, command(&owner, MAV_CMD_DO_CHANGE_SPEED, 1, transitSpeed, -1));
                 compiled.insert(insertion + 1, entry);
+                if (firstArm >= 0 && firstArm < firstSpeed)
+                    compiled.insert(insertion + 2, command(&owner, MAV_CMD_DO_CHANGE_SPEED, 1, block->values()["speed"].toDouble(), -1));
             }
         }
     }

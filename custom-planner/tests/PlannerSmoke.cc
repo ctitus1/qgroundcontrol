@@ -199,6 +199,25 @@ void schedulePlannerSmoke(QQmlApplicationEngine* engine, ChimeraPlanner*)
             commands.clear(); vantage->appendMissionItems(commands, &owner);
             check(commands.first()->command() == MAV_CMD_NAV_DELAY && commands.first()->param1() == 1, "Vantage starts with autonomy marker");
             for (auto* c : commands) check(c->command() != MAV_CMD_DO_MOUNT_CONTROL && c->command() != MAV_CMD_DO_SET_ROI_NONE, "No vantage gimbal command");
+            vantage->setValue("speed",1.4);
+            vantage->setValue("transitSpeed",6);
+            auto* secondVantage=qobject_cast<ChimeraMissionItem*>(mission->insertComplexMissionItem("Chimera vantage",origin.atDistanceAndAzimuth(30,90),7));
+            secondVantage->setValue("speed",1.6); secondVantage->setValue("transitSpeed",6);
+            check(ChimeraPlanner().exportPlan(&plan,"/tmp/qgc-vantage-transits.plan").isEmpty(),"Export survey and vantage transfers");
+            QFile vantageExport("/tmp/qgc-vantage-transits.plan"); check(vantageExport.open(QIODevice::ReadOnly),"Read vantage transfers");
+            const auto transferItems=QJsonDocument::fromJson(vantageExport.readAll()).object()["mission"].toObject()["items"].toArray();
+            double transferSpeed=0; int vantageEntries=0;
+            for (int i=0;i<transferItems.size();++i) {
+                const auto item=transferItems[i].toObject(); const auto params=item["params"].toArray();
+                if (item["command"].toInt()==MAV_CMD_DO_CHANGE_SPEED) transferSpeed=params[1].toDouble();
+                if (item["command"].toInt()!=MAV_CMD_NAV_DELAY || params[0].toDouble()!=1) continue;
+                check(i>=3 && transferItems[i-2].toObject()["command"].toInt()==MAV_CMD_NAV_WAYPOINT,"Vantage transit reaches destination before arming");
+                check(transferItems[i-3].toObject()["params"].toArray()[1].toDouble()==6,"Vantage transfers use rapid speed");
+                check(transferSpeed==(vantageEntries==0?1.4:1.6),"Vantage restores its mission speed on arrival");
+                ++vantageEntries;
+            }
+            check(vantageEntries==2,"Both vantage transfers use rapid entry and speed restoration");
+            mission->removeVisualItem(7);
             saved = plan.saveToJson().object();
             check(mission->load(saved["mission"].toObject(), error), error);
             check(mission->visualItems()->count() == 7, "Split and manual waypoint round trip");
@@ -452,10 +471,16 @@ void schedulePlannerSmoke(QQmlApplicationEngine* engine, ChimeraPlanner*)
             for (int i=0;i<exportVisuals->count();++i)
                 qobject_cast<VisualMissionItem*>(exportVisuals->get(i))->appendMissionItems(uploadItems,&exportOwner);
             qobject_cast<MissionSettingsItem*>(exportVisuals->get(0))->addMissionEndAction(uploadItems,uploadItems.size(),&exportOwner);
-            int expectedIndex=1, transitWaypoints=0;
+            int expectedIndex=1, transitWaypoints=0, surveyEntries=0;
+            double entrySpeed=0;
             for (int i=0;i<plainItems.size();++i) {
                 const auto item=plainItems[i].toObject();
                 check(item["type"]=="SimpleItem" && !item.contains("complexItemType"),"Standard export uses only simple items");
+                if (item["command"].toInt()==MAV_CMD_DO_CHANGE_SPEED) entrySpeed=item["params"].toArray()[1].toDouble();
+                if (item["command"].toInt()==MAV_CMD_NAV_DELAY && item["params"].toArray()[0].toDouble()==0) {
+                    check(entrySpeed==1.7,"Every survey restores mission speed after its rapid transfer");
+                    ++surveyEntries;
+                }
                 if (item["command"].toInt()==MAV_CMD_NAV_WAYPOINT) {
                     const auto speedCommand=plainItems[i-1].toObject();
                     check(i>0 && speedCommand["command"].toInt()==MAV_CMD_DO_CHANGE_SPEED,"Plain waypoints have explicit speeds");
@@ -468,7 +493,7 @@ void schedulePlannerSmoke(QQmlApplicationEngine* engine, ChimeraPlanner*)
                 if (item["command"]==expected["command"] && item["frame"]==expected["frame"] && item["params"]==expected["params"]) ++expectedIndex;
             }
             check(expectedIndex==uploadItems.size(),"Plain export preserves original commands and adds transit legs");
-            check(transitWaypoints>=3,"Plain export uses the shared rapid speed for survey entries");
+            check(transitWaypoints>=3 && transitWaypoints==surveyEntries,"Every survey entry has a rapid transfer");
             PlanMasterController plainController; plainController.setFlyView(false); plainController.start(true);
             check(plainController.missionController()->load(plainMission,error),error);
             auto* plainVisuals=plainController.missionController()->visualItems();

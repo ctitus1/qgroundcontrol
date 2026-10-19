@@ -449,9 +449,9 @@ void FleetPlanner::synchronize()
                 block->setValue("speed",profile["speed"].toDouble());
             } else if (block->fleetRegion()>=0 && block->fleetRegion()<polygons.size()) {
                 block->setSearchCenter(searchCenter);
-                block->setValue("transitSpeed",rapidTransitSpeed());
                 if (block->surveyAreaPolygon()->coordinateList()!=polygons[block->fleetRegion()]) block->surveyAreaPolygon()->setPath(polygons[block->fleetRegion()]);
             }
+            if (block->kind()=="survey" || block->kind()=="vantage") block->setValue("transitSpeed",rapidTransitSpeed());
             if (block->fleetRegion()!=-1 || block->kind()=="survey" || block->kind()=="vantage") { block->setValue("altitude",altitude); block->setValue("yaw",profile["heading"].toDouble()); }
         }
         for (int j=1;j<items->count();++j) if (auto* simple=qobject_cast<SimpleMissionItem*>(items->get(j))) {

@@ -83,3 +83,5 @@ Choose **Export all → Standard QGC plans (no plugin)** to save each drone as `
 Set **Fiducial radius** in Master setup or **Drone offset radius** in the master fiducial panel. The default is 2 m. Each drone waits behind the real fiducial along its survey heading, at its assigned survey altitude. Changes to the fiducial position, radius, heading, or altitude layers update these points.
 
 **Rapid transit speed** defaults to 5 m/s. Set it in Master setup for all drones, or in a standalone survey panel. Plain exports add a transit to each survey entry, restore that survey's flight speed, and then send the 0-second mission arm marker. Split survey returns use the same transit speed. Every waypoint in the plain export has an explicit speed command. Existing speed controls and manual speed overrides remain available in the editable mission. The flight software controls the autonomy response to speed.
+
+Plain exports use rapid transit speed for transfers between surveys and vantage points. Each transfer reaches the destination before the mission speed returns and the 0-second survey or 1-second vantage marker runs.
