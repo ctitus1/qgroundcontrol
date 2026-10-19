@@ -40,15 +40,21 @@ Rectangle {
             text: root.fleetMasterSource ? qsTr("Edit the shared area and defaults for new regions here. Edit existing regions in drone views. Use Fleet setup for headings and altitude layers.") : root.block.kind === "survey" ? (root.block.linkedSurvey ? qsTr("Edits apply to the whole linked survey.") : qsTr("The polygon defines the ground area to cover.")) :
                   root.block.kind === "vantage" ? qsTr("Delay until 1 s arms vantage autonomy. 5g_drone controls the gimbal.") : qsTr("5g_drone controls the gimbal. Delay until is separate from waypoint hold time.")
         }
+        RowLayout {
+            visible: root.block.kind === "fiducial" && root.block.fleetRegion === -1
+            Layout.fillWidth: true
+            QGCLabel { text: qsTr("Drone offset radius"); Layout.fillWidth: true; Layout.minimumWidth: 0; wrapMode: Text.WordWrap }
+            FactTextField { fact: root.block.fact("radius"); Layout.preferredWidth: root.fieldWidth; Layout.minimumWidth: root.fieldWidth; Layout.maximumWidth: root.fieldWidth }
+        }
         SectionHeader { id: flightHeader; text: root.fleetMasterSource ? qsTr("Search area") : qsTr("Flight"); Layout.fillWidth: true }
         ColumnLayout {
             visible: flightHeader.checked
             Layout.fillWidth: true
             spacing: root.margin / 2
             Repeater {
-                model: root.fleetMasterSource ? [["latitude", "Latitude"], ["longitude", "Longitude"], ["speed", "Default speed"], ["pitch", "Default gimbal pitch"], ["overlap", "Default side overlap"]] : root.block.kind === "survey" ? [
+                model: root.fleetMasterSource ? [["latitude", "Latitude"], ["longitude", "Longitude"], ["speed", "Default speed"], ["transitSpeed", "Rapid transit speed"], ["pitch", "Default gimbal pitch"], ["overlap", "Default side overlap"]] : root.block.kind === "survey" ? [
                     ["latitude", "Latitude"], ["longitude", "Longitude"], ["altitude", "Altitude"],
-                    ["speed", "Speed"], ["pitch", "Gimbal pitch"], ["overlap", "Side overlap"],
+                    ["speed", "Speed"], ["transitSpeed", "Rapid transit speed"], ["pitch", "Gimbal pitch"], ["overlap", "Side overlap"],
                     ["yaw", "Heading"], ["angle", "Track angle"]
                 ] : [["latitude", "Latitude"], ["longitude", "Longitude"], ["altitude", "Altitude"],
                      ["yaw", "Heading"], ["delay", "Delay until"], ["speed", "Speed"]]
@@ -64,7 +70,7 @@ Rectangle {
                         Layout.maximumWidth: root.fieldWidth
                         fact: root.block.fact(modelData[0])
                         enabled: (!root.block.splitPart || ["latitude", "longitude", "speed"].indexOf(modelData[0]) >= 0) &&
-                            (root.block.fleetRegion === -1 || (root.block.fleetRegion >= 0 && ["altitude", "yaw", "angle", "latitude", "longitude"].indexOf(modelData[0]) < 0))
+                            (root.block.fleetRegion === -1 || (root.block.fleetRegion >= 0 && ["altitude", "yaw", "angle", "latitude", "longitude", "transitSpeed"].indexOf(modelData[0]) < 0))
                     }
                 }
             }

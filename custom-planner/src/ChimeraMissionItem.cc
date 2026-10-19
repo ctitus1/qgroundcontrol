@@ -115,6 +115,8 @@ ChimeraMissionItem::ChimeraMissionItem(PlanMasterController* master, bool flyVie
     _values["angle"] = 0.;
     _values["pitch"] = -70.;
     _values["entryPoint"] = 0.;
+    _values["radius"] = 2.;
+    _values["transitSpeed"] = 5.;
     auto keys = _values.keys(); keys.append("latitude"); keys.append("longitude");
     for (const auto& key : keys) {
         if (key == "enabled") continue;
@@ -124,7 +126,8 @@ ChimeraMissionItem::ChimeraMissionItem(PlanMasterController* master, bool flyVie
             QStringList{"fx", "fy", "cx", "cy"}.contains(key) ? 6 :
             key == "width" || key == "height" ? 0 : 1);
         if (key == "altitude") { metadata->setRawUnits("m"); metadata->setRawMin(0.1); }
-        if (key == "speed") { metadata->setRawUnits("m/s"); metadata->setRawMin(0.1); }
+        if (key == "radius") { metadata->setRawUnits("m"); metadata->setRawMin(0); }
+        if (key == "speed" || key == "transitSpeed") { metadata->setRawUnits("m/s"); metadata->setRawMin(0.1); }
         if (key == "delay") { metadata->setRawUnits("s"); metadata->setRawMin(1.01); }
         if (key == "yaw" || key == "angle") { metadata->setRawUnits("deg"); metadata->setRawMin(0); metadata->setRawMax(359.99); }
         if (key == "pitch") { metadata->setRawUnits("deg"); metadata->setRawMin(-90); metadata->setRawMax(-0.01); }
@@ -345,7 +348,7 @@ void ChimeraMissionItem::rebuild()
     qDeleteAll(_commands); _commands.clear(); _route.clear(); _error.clear(); _preview.clear();
     const double altitude = _values["altitude"].toDouble(), yaw = _values["yaw"].toDouble();
     const double speed = _values["speed"].toDouble(), pitch = _values["pitch"].toDouble();
-    if (altitude <= 0 || speed <= 0 || yaw < 0 || yaw >= 360 || (isSurveyItem() && (pitch < -90 || pitch >= 0)))
+    if (altitude <= 0 || speed <= 0 || _values["transitSpeed"].toDouble() <= 0 || _values["radius"].toDouble() < 0 || yaw < 0 || yaw >= 360 || (isSurveyItem() && (pitch < -90 || pitch >= 0)))
         _error = tr("Use positive altitude and speed, heading 0 to 359.99, and pitch -90 to below 0.");
     auto cmd = [this](MAV_CMD command, double p1 = 0, double p2 = 0, double p3 = 0) {
         auto* item = new MissionItem(0, command, MAV_FRAME_MISSION, p1,p2,p3,0,0,0,
@@ -394,6 +397,8 @@ void ChimeraMissionItem::rebuild()
             parameters.remove("angle");
             parameters.remove("yaw");
             parameters.remove("speed");
+            parameters.remove("transitSpeed");
+            parameters.remove("radius");
             const bool configure = parameters != _generationValues;
             if (configure) _generationValues.clear();
             built = _planner->buildSurvey(_survey, generated, &owner, path, _error, _flightSurvey, configure);
@@ -532,7 +537,11 @@ bool ChimeraMissionItem::load(const QJsonObject& json, int sequence, QString& er
         QScopedValueRollback<bool> guard(_updating, true);
         const auto values = json["values"].toObject().toVariantMap();
         for (auto it = _values.begin(); it != _values.end(); ++it) {
-            if (it.key() == "entryPoint" && !values.contains(it.key())) { it.value() = 0.; continue; }
+            if (!values.contains(it.key())) {
+                if (it.key() == "entryPoint") { it.value() = 0.; continue; }
+                if (it.key() == "radius") { it.value() = 2.; continue; }
+                if (it.key() == "transitSpeed") { it.value() = 5.; continue; }
+            }
             if (!values.contains(it.key()) || !std::isfinite(values[it.key()].toDouble())) {
                 error = tr("Missing or invalid Chimera setting: %1").arg(it.key()); return false;
             }

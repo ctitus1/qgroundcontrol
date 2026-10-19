@@ -87,6 +87,24 @@ Rectangle {
                 QGCLabel { Layout.fillWidth: true; wrapMode: Text.WordWrap; text: qsTr("In Master view, drag the yellow center and blue ray handles to divide the area. Colors show each drone's starting region.") }
                 QGCCheckBox { text: qsTr("Show flight paths"); checked: chimeraFleet.showRoutes; onClicked: chimeraFleet.showRoutes = checked }
                 QGCButton { text: qsTr("Reset equal sectors"); onClicked: chimeraFleet.resetPartition() }
+                RowLayout {
+                    QGCLabel { text: qsTr("Fiducial radius (m)"); Layout.fillWidth: true; wrapMode: Text.WordWrap }
+                    QGCTextField {
+                        Layout.preferredWidth: 100
+                        text: String(chimeraFleet.fiducialRadius)
+                        validator: DoubleValidator { bottom: 0; locale: "C" }
+                        onEditingFinished: chimeraFleet.fiducialRadius = Number(text)
+                    }
+                }
+                RowLayout {
+                    QGCLabel { text: qsTr("Rapid transit speed (m/s)"); Layout.fillWidth: true; wrapMode: Text.WordWrap }
+                    QGCTextField {
+                        Layout.preferredWidth: 100
+                        text: String(chimeraFleet.rapidTransitSpeed)
+                        validator: DoubleValidator { bottom: 0.1; locale: "C" }
+                        onEditingFinished: chimeraFleet.rapidTransitSpeed = Number(text)
+                    }
+                }
                 QGCLabel { text: qsTr("Shared altitude layers"); font.bold: true }
                 Repeater {
                     model: [["Minimum altitude (m)", "minimum"], ["Maximum altitude (m)", "maximum"], ["Maximum gap (m, 0 = no limit)", "maximumGap"]]

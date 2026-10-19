@@ -22,6 +22,8 @@ class FleetPlanner : public QObject
     Q_PROPERTY(QVariantList cameraPresets READ cameraPresets NOTIFY controllersChanged)
     Q_PROPERTY(QVariantList controlPoints READ controlPoints NOTIFY changed)
     Q_PROPERTY(QString error READ error NOTIFY changed)
+    Q_PROPERTY(double rapidTransitSpeed READ rapidTransitSpeed WRITE setRapidTransitSpeed NOTIFY changed)
+    Q_PROPERTY(double fiducialRadius READ fiducialRadius WRITE setFiducialRadius NOTIFY changed)
     Q_PROPERTY(double minimum READ minimum NOTIFY changed)
     Q_PROPERTY(double maximum READ maximum NOTIFY changed)
     Q_PROPERTY(double maximumGap READ maximumGap NOTIFY changed)
@@ -54,6 +56,10 @@ public:
     QVariantList drones() const { return _profiles; }
     QVariantList overlays() const;
     QString error() const { return _error; }
+    double rapidTransitSpeed() const;
+    void setRapidTransitSpeed(double speed);
+    double fiducialRadius() const;
+    void setFiducialRadius(double radius);
     double minimum() const { return _minimum; }
     double maximum() const { return _maximum; }
     double maximumGap() const { return _maximumGap; }

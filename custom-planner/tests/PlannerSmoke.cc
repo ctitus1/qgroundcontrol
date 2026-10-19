@@ -9,6 +9,8 @@
 #include "MissionController.h"
 #include "MissionItem.h"
 #include "MissionSettingsItem.h"
+#include "SimpleMissionItem.h"
+#include "SpeedSection.h"
 #include "QGCMapPolygon.h"
 #include "QGCCorePlugin.h"
 #include "QmlObjectListModel.h"
@@ -120,6 +122,7 @@ void schedulePlannerSmoke(QQmlApplicationEngine* engine, ChimeraPlanner*)
             for (int i = 0; i < commands.size(); ++i) {
                 auto* c = commands[i];
                 check(c->sequenceNumber() == seq++, "Sequential command IDs");
+
                 if (c->command() == MAV_CMD_DO_SET_ROI_LOCATION) { inspecting = true; ++roiCount; }
                 if (c->command() == MAV_CMD_DO_SET_ROI_NONE && inspecting) { inspecting = false; returned = true; }
                 if (c->command() == MAV_CMD_NAV_DELAY && c->param1() == 0) {
@@ -292,7 +295,7 @@ void schedulePlannerSmoke(QQmlApplicationEngine* engine, ChimeraPlanner*)
                     const auto position = field->mapToItem(panel, QPointF());
                     check(position.x() >= -1 && position.x() + field->width() <= 241 && field->width() >= 90, "Input fits narrow panel: " + field->objectName() + QString(" x=%1 width=%2 panel=%3").arg(position.x()).arg(field->width()).arg(panel->width()));
                 }
-                check(fieldCount == (item->kind() == "survey" ? 14 : 6), "All input fields rendered: " + item->kind() + " count=" + QString::number(fieldCount));
+                check(fieldCount == (item->kind() == "survey" ? 15 : 6), "All input fields rendered: " + item->kind() + " count=" + QString::number(fieldCount));
                 check(window.grabWindow().save("/tmp/qgc-panel-" + item->kind() + ".png"), "Panel screenshot");
                 delete panel;
             }
@@ -332,6 +335,10 @@ void schedulePlannerSmoke(QQmlApplicationEngine* engine, ChimeraPlanner*)
             for (int drone = 0; drone < 3; ++drone) {
                 fleet.setSelected(drone + 1);
                 auto* items = fleet.activeController()->missionController()->visualItems();
+                auto* droneFiducial=qobject_cast<ChimeraMissionItem*>(items->get(2));
+                const auto expectedFiducial=origin.atDistanceAndAzimuth(2,120*drone+180);
+                check(droneFiducial->coordinate().distanceTo(expectedFiducial)<0.01,"Fiducial offset follows the drone heading");
+                check(droneFiducial->coordinate().altitude()==30+10*drone,"Fiducial uses the survey altitude layer");
                 for (int phase = 0; phase < 3; ++phase) {
                     auto* region = qobject_cast<ChimeraMissionItem*>(items->get(3 + phase));
                     check(region && region->fleetRegion() == (drone + phase) % 3 && region->centerOut(), "Rotated region assignment");
@@ -342,6 +349,12 @@ void schedulePlannerSmoke(QQmlApplicationEngine* engine, ChimeraPlanner*)
                     check(region->coordinate().distanceTo(firstRegion->coordinate())<0.01,"Each drone starts all regions at the same camera-offset shared center");
                 }
             }
+            fleet.setFiducialRadius(3.5);
+            auto* radiusMarker=qobject_cast<ChimeraMissionItem*>(fleet.activeController()->missionController()->visualItems()->get(2));
+            check(std::abs(radiusMarker->coordinate().distanceTo(origin)-3.5)<0.01,"Changing radius updates drone positions");
+            fleet.setRapidTransitSpeed(6);
+            fleet.setSelected(1);
+            check(qobject_cast<ChimeraMissionItem*>(fleet.activeController()->missionController()->visualItems()->get(3))->values()["transitSpeed"].toDouble()==6,"Master transit speed reaches survey blocks");
             fleet.setNight(true);
             for (int drone=0;drone<3;++drone) {
                 fleet.setSelected(drone+1);
@@ -381,7 +394,12 @@ void schedulePlannerSmoke(QQmlApplicationEngine* engine, ChimeraPlanner*)
             region->rotateEntryPoint();
             auto* rotatedPart=qobject_cast<ChimeraMissionItem*>(childMission->visualItems()->get(4));
             check(rotatedPart->values()["entryPoint"]==region->values()["entryPoint"] && region->linkedSurveyError().isEmpty(),"Entry rotation applies to the complete linked survey");
-            childMission->insertSimpleMissionItem(origin.atDistanceAndAzimuth(10, 90), 4);
+            auto* manualWaypoint=qobject_cast<SimpleMissionItem*>(childMission->insertSimpleMissionItem(origin.atDistanceAndAzimuth(10, 90), 4));
+            fleet.synchronize();
+            manualWaypoint->speedSection()->setSpecifyFlightSpeed(true);
+            manualWaypoint->speedSection()->flightSpeed()->setRawValue(1.2);
+            fleet.synchronize();
+            check(manualWaypoint->speedSection()->flightSpeed()->rawValue().toDouble()==1.2,"Manual speed overrides remain editable");
             const int countBefore = childMission->visualItems()->count();
             region->setCameraPreset(2);
             domain->setCoordinate(domain->centerCoordinate().atDistanceAndAzimuth(20, 90));
@@ -412,6 +430,7 @@ void schedulePlannerSmoke(QQmlApplicationEngine* engine, ChimeraPlanner*)
             check(restoredFleet.missionController()->load(fleetMissionJson, error), error);
             fleet.attach(&restoredFleet); fleet.load(&restoredFleet, fleetJson);
             check(fleet.enabled() && fleet.validate().isEmpty(), "Master restores all drone missions");
+            check(fleet.fiducialRadius()==3.5 && fleet.rapidTransitSpeed()==6,"Master restores fiducial radius and rapid transit speed");
             check(fleet.controlPoints().size()==savedControls.size() && fleet.controlPoints()[0].value<QGeoCoordinate>().distanceTo(savedControls[0].value<QGeoCoordinate>())<0.01,"Master restores partition controls");
             check(fleet.setCount(3).isEmpty(), "Restore an archived drone after reload");
             fleet.setSelected(3);
@@ -433,15 +452,23 @@ void schedulePlannerSmoke(QQmlApplicationEngine* engine, ChimeraPlanner*)
             for (int i=0;i<exportVisuals->count();++i)
                 qobject_cast<VisualMissionItem*>(exportVisuals->get(i))->appendMissionItems(uploadItems,&exportOwner);
             qobject_cast<MissionSettingsItem*>(exportVisuals->get(0))->addMissionEndAction(uploadItems,uploadItems.size(),&exportOwner);
-            check(plainItems.size()==uploadItems.size()-1,"Standard export contains every upload command except home");
+            int expectedIndex=1, transitWaypoints=0;
             for (int i=0;i<plainItems.size();++i) {
                 const auto item=plainItems[i].toObject();
-                QJsonObject expected; uploadItems[i+1]->save(expected);
-                expected=QJsonDocument::fromJson(QJsonDocument(expected).toJson()).object();
                 check(item["type"]=="SimpleItem" && !item.contains("complexItemType"),"Standard export uses only simple items");
-                for (const auto* key : {"command","frame","params","autoContinue"})
-                    check(item[key]==expected[key],QString("Standard export preserves command %1 field %2").arg(i).arg(key));
+                if (item["command"].toInt()==MAV_CMD_NAV_WAYPOINT) {
+                    const auto speedCommand=plainItems[i-1].toObject();
+                    check(i>0 && speedCommand["command"].toInt()==MAV_CMD_DO_CHANGE_SPEED,"Plain waypoints have explicit speeds");
+                    if (speedCommand["params"].toArray()[1].toDouble()==6) ++transitWaypoints;
+                }
+                while (expectedIndex<uploadItems.size() && uploadItems[expectedIndex]->command()==MAV_CMD_DO_CHANGE_SPEED) ++expectedIndex;
+                if (expectedIndex>=uploadItems.size()) continue;
+                QJsonObject expected; uploadItems[expectedIndex]->save(expected);
+                expected=QJsonDocument::fromJson(QJsonDocument(expected).toJson()).object();
+                if (item["command"]==expected["command"] && item["frame"]==expected["frame"] && item["params"]==expected["params"]) ++expectedIndex;
             }
+            check(expectedIndex==uploadItems.size(),"Plain export preserves original commands and adds transit legs");
+            check(transitWaypoints>=3,"Plain export uses the shared rapid speed for survey entries");
             PlanMasterController plainController; plainController.setFlyView(false); plainController.start(true);
             check(plainController.missionController()->load(plainMission,error),error);
             auto* plainVisuals=plainController.missionController()->visualItems();

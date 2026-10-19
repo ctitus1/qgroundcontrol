@@ -2,6 +2,7 @@
 #include "ChimeraPlanner.h"
 #include "ChimeraMissionItem.h"
 #include "CameraCalc.h"
+#include "Vehicle.h"
 #include "MissionController.h"
 #include "MissionItem.h"
 #include "MissionSettingsItem.h"
@@ -214,6 +215,7 @@ QString ChimeraPlanner::exportPlan(QObject* item, const QString& filename)
     QList<MissionItem*> compiled;
     auto* visualItems = controller->missionController()->visualItems();
     for (int i = 0; i < visualItems->count(); ++i) {
+        const int firstCommand = compiled.size();
         auto* visual = qobject_cast<VisualMissionItem*>(visualItems->get(i));
         if (auto* block = qobject_cast<ChimeraMissionItem*>(visual)) {
             if (!block->error().isEmpty()) return block->error();
@@ -227,6 +229,7 @@ QString ChimeraPlanner::exportPlan(QObject* item, const QString& filename)
             QString error;
             if (!buildSurvey(candidate, generated, &owner, points, error)) return error;
             compiled.append(command(&owner, MAV_CMD_DO_SET_ROI_NONE));
+            compiled.append(command(&owner, MAV_CMD_DO_CHANGE_SPEED, 1, settings(candidate)["speed"].toDouble(), -1));
             compiled.append(command(&owner, MAV_CMD_DO_MOUNT_CONTROL, settings(candidate)["pitch"].toDouble()));
             compiled.append(command(&owner, MAV_CMD_NAV_DELAY, 0));
             compiled.append(generated);
@@ -236,17 +239,47 @@ QString ChimeraPlanner::exportPlan(QObject* item, const QString& filename)
             }
             visual->appendMissionItems(compiled, &owner);
         }
+        auto* block = qobject_cast<ChimeraMissionItem*>(visual);
+        if (block && block->kind() == "survey") {
+            int firstWaypoint = -1, firstArm = -1, firstSpeed = -1;
+            for (int j = firstCommand; j < compiled.size(); ++j) {
+                const auto command = compiled[j]->command();
+                if (firstWaypoint < 0 && command == MAV_CMD_NAV_WAYPOINT) firstWaypoint = j;
+                if (firstArm < 0 && command == MAV_CMD_NAV_DELAY && compiled[j]->param1() == 0) firstArm = j;
+                if (firstSpeed < 0 && command == MAV_CMD_DO_CHANGE_SPEED) firstSpeed = j;
+            }
+            const double transitSpeed = block->values()["transitSpeed"].toDouble();
+            if (firstWaypoint >= 0 && firstArm > firstWaypoint && firstSpeed >= firstCommand && firstSpeed < firstWaypoint) {
+                compiled[firstSpeed]->setParam2(transitSpeed);
+            } else if (firstWaypoint >= 0) {
+                auto* entry = new MissionItem(*compiled[firstWaypoint], &owner);
+                const int insertion = firstSpeed >= 0 ? firstSpeed : firstCommand;
+                compiled.insert(insertion, command(&owner, MAV_CMD_DO_CHANGE_SPEED, 1, transitSpeed, -1));
+                compiled.insert(insertion + 1, entry);
+            }
+        }
     }
     if (auto* home = qobject_cast<MissionSettingsItem*>(visualItems->get(0))) {
         home->addMissionEndAction(compiled, compiled.size(), &owner);
     }
+    const auto* vehicle = controller->controllerVehicle();
+    const double defaultSpeed = vehicle->multiRotor() || vehicle->vtol() ? vehicle->defaultHoverSpeed() : vehicle->defaultCruiseSpeed();
+    double flightSpeed = defaultSpeed;
     QJsonArray items;
+    int sequence = 1;
     for (int i = 1; i < compiled.size(); ++i) {
         auto* missionItem = compiled[i];
         if (missionItem->command() == MAV_CMD_DO_JUMP || missionItem->command() == MAV_CMD_DO_JUMP_TAG) {
             return tr("Remove mission jumps before export. Expansion changes their target sequences.");
         }
-        items.append(serialize(missionItem, i));
+        if (missionItem->command() == MAV_CMD_DO_CHANGE_SPEED) {
+            if (missionItem->param2() > 0) flightSpeed = missionItem->param2();
+            else if (missionItem->param2() == -1) flightSpeed = defaultSpeed;
+        }
+        if (missionItem->command() == MAV_CMD_NAV_WAYPOINT &&
+            (i == 1 || compiled[i-1]->command() != MAV_CMD_DO_CHANGE_SPEED || compiled[i-1]->param2() <= 0))
+            items.append(serialize(command(&owner, MAV_CMD_DO_CHANGE_SPEED, 1, flightSpeed, -1), sequence++));
+        items.append(serialize(missionItem, sequence++));
     }
     auto root = controller->saveToJson().object();
     auto mission = root["mission"].toObject();

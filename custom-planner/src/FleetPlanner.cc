@@ -194,6 +194,26 @@ void FleetPlanner::requestCreate(QObject* source,int count,double minimum,double
         if (!error.isEmpty()) qgcApp()->showAppMessage(error);
     });
 }
+double FleetPlanner::fiducialRadius() const
+{
+    return fiducial() ? fiducial()->values()["radius"].toDouble() : 2.;
+}
+void FleetPlanner::setFiducialRadius(double radius)
+{
+    if (!fiducial() || !std::isfinite(radius) || radius < 0) return;
+    fiducial()->setValue("radius",radius);
+    synchronize();
+}
+double FleetPlanner::rapidTransitSpeed() const
+{
+    return domain() ? domain()->values()["transitSpeed"].toDouble() : 5.;
+}
+void FleetPlanner::setRapidTransitSpeed(double speed)
+{
+    if (!domain() || !std::isfinite(speed) || speed <= 0) return;
+    domain()->setValue("transitSpeed",speed);
+    synchronize();
+}
 QString FleetPlanner::create(QObject* object,int count,double minimum,double maximum,double maximumGap)
 {
     auto* source=qobject_cast<ChimeraMissionItem*>(object);
@@ -424,9 +444,12 @@ void FleetPlanner::synchronize()
         settings->plannedHomePositionAltitude()->setRawValue(homeAltitude);
         for (auto* block : blocks(_children[i])) {
             if (block->fleetRegion()==-2) {
-                block->setCoordinate(fiducial()->coordinate()); block->setValue("delay",fiducial()->values()["delay"].toDouble());
+                block->setCoordinate(fiducial()->coordinate().atDistanceAndAzimuth(fiducialRadius(),profile["heading"].toDouble()+180));
+                block->setValue("delay",fiducial()->values()["delay"].toDouble());
+                block->setValue("speed",profile["speed"].toDouble());
             } else if (block->fleetRegion()>=0 && block->fleetRegion()<polygons.size()) {
                 block->setSearchCenter(searchCenter);
+                block->setValue("transitSpeed",rapidTransitSpeed());
                 if (block->surveyAreaPolygon()->coordinateList()!=polygons[block->fleetRegion()]) block->surveyAreaPolygon()->setPath(polygons[block->fleetRegion()]);
             }
             if (block->fleetRegion()!=-1 || block->kind()=="survey" || block->kind()=="vantage") { block->setValue("altitude",altitude); block->setValue("yaw",profile["heading"].toDouble()); }
@@ -618,7 +641,7 @@ void FleetPlanner::load(PlanMasterController* controller,const QJsonObject& plan
     const auto searchCenter=partitionInput(_children.size()).center;
     for (auto* child : _children) for (auto* block : blocks(child))
         if (block->fleetRegion()>=0) block->setSearchCenter(searchCenter);
-    watch(); notify();
+    _syncTimer.start(); watch(); notify();
 }
 QString FleetPlanner::exportDrone(int drone,const QString& filename,bool standardItems)
 {
