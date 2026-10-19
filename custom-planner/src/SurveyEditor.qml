@@ -86,22 +86,22 @@ ColumnLayout {
         Layout.fillWidth: true
         visible: root.values.enabled === true
         enabled: root.result.path !== undefined && !root.result.error
-        text: qsTr("Export editable mission…")
+        text: qsTr("Export mission files…")
         onClicked: outputDialog.openForSave()
     }
     QGCLabel {
         Layout.fillWidth: true
         visible: root.values.enabled === true
         wrapMode: Text.WordWrap
-        text: qsTr("Save this survey source, then export and open the waypoint copy for flight. Add inspections from the Pattern menu. Export includes all enabled surveys in this mission.")
+        text: qsTr("Export saves the editable mission and a -plain.plan copy for flight. Export includes the whole mission.")
     }
     QGCFileDialog {
         id: outputDialog
-        title: qsTr("Export editable mission")
+        title: qsTr("Export mission files")
         folder: QGroundControl.settingsManager.appSettings.missionSavePath
         onAcceptedForSave: (file) => {
-            var error = chimeraPlanner.exportPlan(root.survey, file)
-            mainWindow.showMessageDialog(qsTr("Chimera planner"), error || qsTr("Mission exported. Open the new .plan file to edit inspection waypoints and upload."))
+            var error = chimeraPlanner.exportMission(root.survey, file)
+            mainWindow.showMessageDialog(qsTr("Chimera planner"), error || qsTr("Mission files exported. Open the -plain.plan file for flight."))
             close()
         }
     }

@@ -17,6 +17,8 @@ Rectangle {
     property real margin: ScreenTools.defaultFontPixelHeight / 2
     property real fieldWidth: Math.min(Math.max(120, ScreenTools.defaultFontPixelWidth * 18), (width - margin * 2) * 0.62)
     property string notice: ""
+    property real pendingHeading: 0
+    Timer { id: headingUpdate; interval: 50; onTriggered: root.block.setValue("yaw", root.pendingHeading) }
     QGCPalette { id: qgcPal; colorGroupEnabled: root.enabled }
 
     ColumnLayout {
@@ -37,7 +39,7 @@ Rectangle {
             Layout.fillWidth: true; Layout.minimumWidth: 0
             font.pointSize: ScreenTools.smallFontPointSize
             wrapMode: Text.WordWrap
-            text: root.fleetMasterSource ? qsTr("Edit the shared area and defaults for new regions here. Edit existing regions in drone views. Use Fleet setup for headings and altitude layers.") : root.block.kind === "survey" ? (root.block.linkedSurvey ? qsTr("Edits apply to the whole linked survey.") : qsTr("The polygon defines the ground area to cover.")) :
+            text: root.fleetMasterSource ? qsTr("Edit the shared area, fleet setup, and flight defaults here. Master heading changes rotate all drone paths.") : root.block.kind === "survey" ? (root.block.linkedSurvey ? qsTr("Edits apply to the whole linked survey.") : qsTr("The polygon defines the ground area to cover.")) :
                   root.block.kind === "vantage" ? qsTr("Delay until 1 s arms vantage autonomy. 5g_drone controls the gimbal.") : qsTr("5g_drone controls the gimbal. Delay until is separate from waypoint hold time.")
         }
         RowLayout {
@@ -52,7 +54,7 @@ Rectangle {
             Layout.fillWidth: true
             spacing: root.margin / 2
             Repeater {
-                model: root.fleetMasterSource ? [["latitude", "Latitude"], ["longitude", "Longitude"], ["speed", "Default speed"], ["transitSpeed", "Rapid transit speed"], ["pitch", "Default gimbal pitch"], ["overlap", "Default side overlap"]] : root.block.kind === "survey" ? [
+                model: root.block.kind === "survey" ? [
                     ["latitude", "Latitude"], ["longitude", "Longitude"], ["altitude", "Altitude"],
                     ["speed", "Speed"], ["transitSpeed", "Rapid transit speed"], ["pitch", "Gimbal pitch"], ["overlap", "Side overlap"],
                     ["yaw", "Heading"], ["angle", "Track angle"]
@@ -60,6 +62,7 @@ Rectangle {
                      ["yaw", "Heading"], ["delay", "Delay until"], ["speed", "Speed"]]
                 delegate: RowLayout {
                     required property var modelData
+                    visible: !root.fleetMasterSource || modelData[0] !== "altitude"
                     Layout.fillWidth: true
                     spacing: root.margin / 2
                     QGCLabel { text: modelData[1]; Layout.fillWidth: true; Layout.minimumWidth: 0; wrapMode: Text.Wrap }
@@ -70,23 +73,31 @@ Rectangle {
                         Layout.maximumWidth: root.fieldWidth
                         fact: root.block.fact(modelData[0])
                         enabled: (!root.block.splitPart || ["latitude", "longitude", "speed"].indexOf(modelData[0]) >= 0) &&
-                            (root.block.fleetRegion === -1 || (root.block.fleetRegion >= 0 && ["altitude", "yaw", "angle", "latitude", "longitude", "transitSpeed"].indexOf(modelData[0]) < 0))
+                            (root.block.fleetRegion === -1 || (root.block.fleetRegion >= 0 && ["latitude", "longitude", "transitSpeed"].indexOf(modelData[0]) < 0))
                     }
                 }
             }
         }
         QGCSlider {
+            id: headingSlider
             objectName: "headingSlider"
-            visible: root.block.kind === "survey" && !root.fleetMasterSource && flightHeader.checked
-            enabled: !root.block.splitPart && root.block.fleetRegion === -1
+            visible: root.block.kind === "survey" && flightHeader.checked
+            enabled: !root.block.splitPart && root.block.fleetRegion >= -1
             Layout.fillWidth: true
             from: 0; to: 359; stepSize: 1
-            value: root.block.values.yaw
-            onMoved: root.block.setValue("yaw", value)
+            Binding {
+                target: headingSlider
+                property: "value"
+                value: root.block.values.yaw
+                when: !headingSlider.pressed
+                restoreMode: Binding.RestoreNone
+            }
+            onMoved: { root.pendingHeading = value; if (!headingUpdate.running) headingUpdate.start() }
+            onPressedChanged: if (!pressed && headingUpdate.running) { headingUpdate.stop(); root.block.setValue("yaw", root.pendingHeading) }
             Accessible.name: qsTr("Heading and track angle")
         }
         QGCLabel {
-            visible: root.block.kind === "survey" && !root.fleetMasterSource && flightHeader.checked
+            visible: root.block.kind === "survey" && flightHeader.checked
             Layout.fillWidth: true; wrapMode: Text.WordWrap
             font.pointSize: ScreenTools.smallFontPointSize
             text: qsTr("Heading and track angle change together.")
@@ -156,6 +167,11 @@ Rectangle {
         }
         Loader {
             Layout.fillWidth: true
+            active: chimeraFleet.enabled && root.block.kind === "survey"
+            source: "qrc:/Planner/FleetSettings.qml"
+        }
+        Loader {
+            Layout.fillWidth: true
             active: root.block.kind === "survey" && root.block.fleetRegion === -1 && !chimeraFleet.enabled
             source: "qrc:/Planner/FleetSetup.qml"
             onLoaded: item.sourceSurvey = root.block
@@ -164,7 +180,7 @@ Rectangle {
             visible: root.block.fleetRegion !== -1
             Layout.fillWidth: true; wrapMode: Text.WordWrap
             text: root.block.fleetRegion === -2 ? qsTr("Shared fiducial: edit its position and delay in Master view.") :
-                qsTr("Region %1. Heading and altitude come from Fleet setup. Edit camera and inspection paths here.").arg(root.block.fleetRegion + 1)
+                qsTr("Region %1. Heading and altitude edits apply to this drone. Camera and flight settings can be adjusted for this region.").arg(root.block.fleetRegion + 1)
         }
         SectionHeader { id: splitHeader; text: qsTr("Split points"); visible: root.block.kind === "survey" && !(chimeraFleet.enabled && chimeraFleet.selected === 0 && root.block.fleetRegion === -1); Layout.fillWidth: true }
         ColumnLayout {
@@ -192,19 +208,19 @@ Rectangle {
             }
         }
         QGCButton {
-            text: qsTr("Export standard QGC plan…")
+            text: qsTr("Export mission files…")
             visible: !chimeraFleet.enabled || chimeraFleet.selected > 0
             Layout.fillWidth: true
             onClicked: plainExport.openForSave()
         }
         QGCFileDialog {
             id: plainExport
-            title: qsTr("Export whole mission as standard QGC items")
+            title: qsTr("Export editable and standard mission files")
             nameFilters: [qsTr("QGC plan (*.plan)")]
             onAcceptedForSave: file => {
                 const error = chimeraFleet.enabled
-                    ? chimeraFleet.exportDrone(chimeraFleet.selected - 1, file, true)
-                    : chimeraPlanner.exportPlan(root.block, file)
+                    ? chimeraFleet.exportAll(file)
+                    : chimeraPlanner.exportMission(root.block, file)
                 if (error) mainWindow.showMessageDialog(qsTr("Export mission"), error)
                 close()
             }

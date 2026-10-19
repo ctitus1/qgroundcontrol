@@ -1,6 +1,7 @@
 <RCC>
     <qresource prefix="/Planner">
         <file>CameraPresets.json</file>
+        <file alias="FleetSettings.qml">src/FleetSettings.qml</file>
         <file alias="FleetSetup.qml">src/FleetSetup.qml</file>
         <file alias="FleetBar.qml">src/FleetBar.qml</file>
         <file alias="FleetOverlay.qml">src/FleetOverlay.qml</file>

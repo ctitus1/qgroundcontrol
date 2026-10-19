@@ -17,6 +17,7 @@
 #include <QScopedValueRollback>
 #include <QUrl>
 #include <QCoreApplication>
+#include <algorithm>
 #include <cmath>
 #include <limits>
 
@@ -121,7 +122,7 @@ void FleetPlanner::attach(PlanMasterController* master)
 void FleetPlanner::clear(bool immediate)
 {
     _selected = 0; _syncTimer.stop(); _previewTimer.stop();
-    auto children = _children; _children.clear(); _profiles.clear(); _archive = {}; _error.clear();
+    auto children = _children; _children.clear(); _profiles.clear(); _masterValues.clear(); _masterCamera=-1; _archive = {}; _error.clear();
     _partitionCenter={}; _partitionOrigin={}; _partitionVertices.clear(); _partitionPolygon.clear(); _cachedRegions.clear(); _night=false;
     notify();
     for (auto* child : children) { if (immediate) delete child; else child->deleteLater(); }
@@ -137,7 +138,16 @@ PlanMasterController* FleetPlanner::makeChild()
 }
 bool FleetPlanner::owns(PlanMasterController* controller) const { return isMaster(controller) || _children.contains(controller); }
 PlanMasterController* FleetPlanner::activeController() const { return _selected > 0 && _selected <= _children.size() ? _children[_selected-1] : _master.data(); }
-void FleetPlanner::setSelected(int selected) { if (selected != _selected && selected >= 0 && selected <= _children.size()) { _selected=selected; notify(); } }
+void FleetPlanner::setSelected(int selected)
+{
+    if (selected == _selected || selected < 0 || selected > _children.size()) return;
+    _selected=selected;
+    for (auto* block : blocks(activeController())) if (block->kind()=="survey") {
+        activeController()->missionController()->setCurrentPlanViewSeqNum(block->sequenceNumber(),true);
+        break;
+    }
+    notify();
+}
 ChimeraMissionItem* FleetPlanner::domain() const {
     ChimeraMissionItem* result = nullptr;
     for (auto* b : blocks(_master)) if (b->kind() == "survey") { if (result) return nullptr; result=b; }
@@ -148,10 +158,22 @@ ChimeraMissionItem* FleetPlanner::fiducial() const {
     for (auto* b : blocks(_master)) if (b->kind() == "fiducial") { if (result) return nullptr; result=b; }
     return result;
 }
-double FleetPlanner::separation() const {
-    if (_profiles.size() < 2) return 0;
-    const double gap = (_maximum-_minimum)/(_profiles.size()-1);
-    return _maximumGap > 0 ? std::min(gap,_maximumGap) : gap;
+double FleetPlanner::assignedAltitude(int drone) const
+{
+    const auto profile=_profiles[drone].toMap();
+    if (profile.value("manualAltitude",false).toBool()) return std::clamp(profile["altitude"].toDouble(),_minimum,_maximum);
+    const double step=(_maximum-_minimum)/std::max(1, int(_profiles.size())-1);
+    return _minimum+drone*(_maximumGap>0 ? std::min(step,_maximumGap) : step);
+}
+double FleetPlanner::separation() const
+{
+    if (_profiles.size()<2) return 0;
+    QList<double> layers;
+    for (int i=0;i<_profiles.size();++i) layers.append(assignedAltitude(i));
+    std::sort(layers.begin(),layers.end());
+    double gap=INFINITY;
+    for (int i=1;i<layers.size();++i) gap=std::min(gap,layers[i]-layers[i-1]);
+    return gap;
 }
 QList<QList<QGeoCoordinate>> FleetPlanner::regions(QString& error, int count) const
 {
@@ -227,6 +249,7 @@ QString FleetPlanner::create(QObject* object,int count,double minimum,double max
     if (!std::isfinite(minimum) || !std::isfinite(maximum) || !std::isfinite(maximumGap) || minimum<=0 || maximum<=minimum || maximumGap<0)
         return tr("Use positive altitude limits, maximum above minimum, and a nonnegative maximum gap.");
     _minimum=minimum; _maximum=maximum; _maximumGap=maximumGap;
+    _masterValues=source->values(); _masterCamera=source->cameraPreset();
     auto home=_master->missionController()->plannedHomePosition();
     if (!home.isValid() || !std::isfinite(home.altitude())) return tr("Set the master launch location and elevation before creating drone missions.");
     for (int i=0;i<count;++i) _profiles.append(defaultProfile(i,count));
@@ -379,14 +402,16 @@ void FleetPlanner::setLayers(double minimum,double maximum,double maximumGap)
         _error=tr("Use positive altitude limits, maximum above minimum, and a nonnegative maximum gap."); notify(); return;
     }
     if (_minimum==minimum && _maximum==maximum && _maximumGap==maximumGap && _error.isEmpty()) return;
-    _minimum=minimum; _maximum=maximum; _maximumGap=maximumGap; synchronize();
+    _minimum=minimum; _maximum=maximum; _maximumGap=maximumGap;
+    for (int i=0;i<_profiles.size();++i) { auto profile=_profiles[i].toMap(); profile["manualAltitude"]=false; _profiles[i]=profile; }
+    synchronize();
 }
-void FleetPlanner::setProfile(int drone,const QString& key,double value)
+void FleetPlanner::setProfile(int drone,const QString& key,double value,bool deferred)
 {
     if (drone<0 || drone>=_profiles.size() || !std::isfinite(value)) return;
     const QMap<QString,QPair<double,double>> limits{{"heading",{0,359.99}},{"latitude",{-90,90}},{"longitude",{-180,180}},
         {"uas",{1,8}},{"startRegion",{0,double(_profiles.size()-1)}},{"cameraPreset",{-1,8}},
-        {"speed",{0.01,100}},{"pitch",{-90,-0.01}},{"overlap",{0,94.99}},
+        {"altitude",{_minimum,_maximum}},{"speed",{0.01,100}},{"pitch",{-90,-0.01}},{"overlap",{0,94.99}},
         {"width",{1,100000}},{"height",{1,100000}},{"fx",{0.1,100000}},{"fy",{0.1,100000}},{"cx",{0,100000}},{"cy",{0,100000}}};
     if (!limits.contains(key) || value<limits[key].first || value>limits[key].second) return;
     auto profile=_profiles[drone].toMap();
@@ -403,6 +428,7 @@ void FleetPlanner::setProfile(int drone,const QString& key,double value)
     }
     profile[key]=value;
     if (key=="heading") profile["automaticHeading"]=false;
+    if (key=="altitude") profile["manualAltitude"]=true;
     if (key=="uas") profile["name"]=QString("UAS%1").arg(int(value));
     if (key=="cameraPreset") profile["cameraAutomatic"]=value<0;
     if (QStringList{"width","height","fx","fy","cx","cy"}.contains(key)) { profile["cameraAutomatic"]=false; profile["cameraPreset"]=0; }
@@ -414,12 +440,37 @@ void FleetPlanner::setProfile(int drone,const QString& key,double value)
         return;
     }
     if (QStringList{"uas","cameraPreset","speed","pitch","overlap","width","height","fx","fy","cx","cy"}.contains(key)) applyDroneSettings(drone,key);
-    synchronize();
+    if (deferred) { if (!_syncTimer.isActive()) _syncTimer.start(); notify(); }
+    else synchronize();
 }
 void FleetPlanner::synchronize()
 {
     if (_updating || !enabled()) return;
     _syncTimer.stop(); QScopedValueRollback<bool> guard(_updating,true);
+    if (auto* source=domain()) {
+        const auto values=source->values();
+        const double rotation=values["yaw"].toDouble()-_masterValues.value("yaw",values["yaw"]).toDouble();
+        bool cameraChanged=_masterCamera!=source->cameraPreset();
+        for (const auto& key : {"width","height","fx","fy","cx","cy"})
+            cameraChanged |= values[key]!=_masterValues.value(key,values[key]);
+        for (int i=0;i<_profiles.size();++i) {
+            auto profile=_profiles[i].toMap();
+            profile["heading"]=std::fmod(profile["heading"].toDouble()+rotation+360.,360.);
+            for (const auto& key : {"speed","pitch","overlap","width","height","fx","fy","cx","cy"})
+                if (values[key]!=_masterValues.value(key,values[key])) profile[key]=values[key];
+            if (cameraChanged) {
+                profile["cameraPreset"]=source->cameraPreset(); profile["cameraAutomatic"]=false;
+                for (const auto& key : {"width","height","fx","fy","cx","cy"}) profile[key]=values[key];
+            }
+            const auto previous=_profiles[i].toMap();
+            _profiles[i]=profile;
+            if (cameraChanged) applyDroneSettings(i,"cameraPreset");
+            for (const auto& key : {"speed","pitch","overlap","width","height","fx","fy","cx","cy"})
+                if (profile[key]!=previous[key]) applyDroneSettings(i,key);
+        }
+        _masterValues=values; _masterCamera=source->cameraPreset();
+    }
+
     if (auto* source=domain()) {
         const auto center=source->centerCoordinate(); const auto polygon=source->surveyAreaPolygon()->coordinateList();
         if (_partitionOrigin.isValid() && center.distanceTo(_partitionOrigin)>0.001 && _partitionPolygon.size()==polygon.size()) {
@@ -436,7 +487,7 @@ void FleetPlanner::synchronize()
     if (!std::isfinite(homeAltitude)) { _error=tr("Set a finite master launch elevation."); notify(); return; }
     const auto searchCenter=partitionInput(_children.size()).center;
     for (int i=0;i<_children.size();++i) {
-        auto profile=_profiles[i].toMap(); const double altitude=_minimum+i*separation(); profile["altitude"]=altitude; _profiles[i]=profile;
+        auto profile=_profiles[i].toMap(); const double altitude=assignedAltitude(i); profile["altitude"]=altitude; _profiles[i]=profile;
         auto* mission=_children[i]->missionController(); auto* items=mission->visualItems();
         auto* settings=qobject_cast<MissionSettingsItem*>(items->get(0));
         QGeoCoordinate launch(profile["latitude"].toDouble(),profile["longitude"].toDouble(),homeAltitude);
@@ -496,6 +547,15 @@ void FleetPlanner::watch()
             connect(item,&VisualMissionItem::lastSequenceNumberChanged,this,update);
             connect(item,&VisualMissionItem::dirtyChanged,this,update);
             if (auto* block=qobject_cast<ChimeraMissionItem*>(item)) {
+                connect(block,&ChimeraMissionItem::changed,this,[this,plan,block] {
+                    if (_updating || plan==_master || block->fleetRegion()<0) return;
+                    const int index=_children.indexOf(plan); if (index<0) return;
+                    auto profile=_profiles[index].toMap();
+                    const double heading=block->values()["yaw"].toDouble(), altitude=block->values()["altitude"].toDouble();
+                    if (profile["heading"].toDouble()!=heading) { profile["heading"]=heading; profile["automaticHeading"]=false; }
+                    if (profile["altitude"].toDouble()!=altitude) { profile["altitude"]=altitude; profile["manualAltitude"]=true; }
+                    _profiles[index]=profile;
+                });
                 connect(block,&ChimeraMissionItem::changed,this,update);
                 if (plan==_master) connect(block,&ChimeraMissionItem::translated,this,[this](double distance,double azimuth) {
                     movePartition(distance,azimuth); emit translated(distance,azimuth);
@@ -541,6 +601,14 @@ QString FleetPlanner::validate() const
     if (_children.size()!=_profiles.size()) return tr("The fleet is missing a drone mission.");
     if (!std::isfinite(_minimum) || !std::isfinite(_maximum) || !std::isfinite(_maximumGap) || _minimum<=0 || _maximum<=_minimum || _maximumGap<0)
         return tr("Invalid fleet altitude limits.");
+    if (separation()<0.1) return tr("Separate drone altitude layers by at least 0.1 m.");
+    if (_maximumGap>0) {
+        QList<double> layers;
+        for (int i=0;i<_profiles.size();++i) layers.append(assignedAltitude(i));
+        std::sort(layers.begin(),layers.end());
+        for (int i=1;i<layers.size();++i) if (layers[i]-layers[i-1]>_maximumGap+1e-6)
+            return tr("Reduce the altitude gap or increase the maximum gap.");
+    }
     QSet<int> aircraft, starts;
     for (int i=0;i<_profiles.size();++i) {
         const auto profile=_profiles[i].toMap(); const int uas=profile.value("uas",i+1).toInt(), region=profile.value("startRegion",i).toInt();
@@ -610,6 +678,7 @@ void FleetPlanner::load(PlanMasterController* controller,const QJsonObject& plan
     if (domain()) { _partitionOrigin=domain()->centerCoordinate(); _partitionPolygon=domain()->surveyAreaPolygon()->coordinateList(); }
     _archive=fleet["archive"].toObject();
     _profiles=profiles;
+    _masterValues=domain()->values(); _masterCamera=domain()->cameraPreset();
     if (auto* source=domain()) for (int i=0; i<_profiles.size(); ++i) {
         auto profile=_profiles[i].toMap();
         if (!profile.contains("automaticHeading")) {
@@ -768,13 +837,13 @@ void FleetPlanner::editRegion(int drone,int region)
         _children[drone]->missionController()->setCurrentPlanViewSeqNum(block->sequenceNumber(),true); return;
     }
 }
-QString FleetPlanner::exportAll(const QString& filename,bool standardItems)
+QString FleetPlanner::exportAll(const QString& filename)
 {
     synchronize(); const auto error=validate(); if (!error.isEmpty()) return error;
     QString base=QUrl(filename).isLocalFile()?QUrl(filename).toLocalFile():filename;
     if (base.endsWith(".plan",Qt::CaseInsensitive)) base.chop(5);
     if (QFileInfo(base).fileName().isEmpty()) return tr("Enter a mission name.");
-    for (int i=0;i<_children.size();++i) {
+    for (int i=0;i<_children.size();++i) for (bool standardItems : {false,true}) {
         const auto path=QString("%1-uas%2%3.plan").arg(base).arg(_profiles[i].toMap().value("uas",i+1).toInt()).arg(standardItems ? "-plain" : "");
         const auto result=exportDrone(i,path,standardItems); if (!result.isEmpty()) return tr("Could not export %1: %2").arg(path,result);
     }

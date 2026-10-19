@@ -151,15 +151,18 @@ bool ChimeraPlanner::buildSurvey(SurveyComplexItem* source, QList<MissionItem*>&
                 c.latitude(), c.longitude(), source->cameraCalc()->distanceToSurface()->rawValue().toDouble(), true,false,owner));
         };
         waypoint(center);
-        items.append(command(owner, MAV_CMD_DO_SET_CAM_TRIGG_DIST, shape.captureDistance, 0, 1));
-        items.append(command(owner, MAV_CMD_DO_SET_CAM_TRIGG_DIST, 0));
         for (const auto& pass : passes) {
             waypoint(pass.start);
-            items.append(command(owner, MAV_CMD_DO_SET_CAM_TRIGG_DIST, shape.captureDistance));
             waypoint(pass.end);
-            items.append(command(owner, MAV_CMD_DO_SET_CAM_TRIGG_DIST, 0));
         }
-    } else generated.appendMissionItems(items, owner);
+    } else {
+        QList<MissionItem*> generatedItems;
+        generated.appendMissionItems(generatedItems, owner);
+        for (auto* item : generatedItems) {
+            if (item->command() == MAV_CMD_DO_SET_CAM_TRIGG_DIST) { delete item; continue; }
+            items.append(item);
+        }
+    }
     const double yaw = settings(source)["yaw"].toDouble();
     for (auto* item : std::as_const(items)) {
         if (item->command() == MAV_CMD_NAV_WAYPOINT) {
@@ -272,6 +275,7 @@ QString ChimeraPlanner::exportPlan(QObject* item, const QString& filename)
     int sequence = 1;
     for (int i = 1; i < compiled.size(); ++i) {
         auto* missionItem = compiled[i];
+        if (missionItem->command() == MAV_CMD_DO_SET_CAM_TRIGG_DIST) continue;
         if (missionItem->command() == MAV_CMD_DO_JUMP || missionItem->command() == MAV_CMD_DO_JUMP_TAG) {
             return tr("Remove mission jumps before export. Expansion changes their target sequences.");
         }
@@ -280,7 +284,8 @@ QString ChimeraPlanner::exportPlan(QObject* item, const QString& filename)
             else if (missionItem->param2() == -1) flightSpeed = defaultSpeed;
         }
         if (missionItem->command() == MAV_CMD_NAV_WAYPOINT &&
-            (i == 1 || compiled[i-1]->command() != MAV_CMD_DO_CHANGE_SPEED || compiled[i-1]->param2() <= 0))
+            (items.isEmpty() || items.last().toObject()["command"].toInt() != MAV_CMD_DO_CHANGE_SPEED ||
+             items.last().toObject()["params"].toArray()[1].toDouble() <= 0))
             items.append(serialize(command(&owner, MAV_CMD_DO_CHANGE_SPEED, 1, flightSpeed, -1), sequence++));
         items.append(serialize(missionItem, sequence++));
     }
@@ -293,6 +298,23 @@ QString ChimeraPlanner::exportPlan(QObject* item, const QString& filename)
     if (!file.open(QIODevice::WriteOnly)) return file.errorString();
     const auto bytes = QJsonDocument(root).toJson();
     if (file.write(bytes) != bytes.size() || !file.commit()) return file.errorString();
+    return {};
+}
+
+QString ChimeraPlanner::exportMission(QObject* item, const QString& filename)
+{
+    auto* controller = qobject_cast<PlanMasterController*>(item);
+    if (auto* visual = qobject_cast<VisualMissionItem*>(item)) controller = visual->masterController();
+    if (!controller) return tr("Select a mission first.");
+    QString base = QUrl(filename).isLocalFile() ? QUrl(filename).toLocalFile() : filename;
+    if (base.endsWith(".plan", Qt::CaseInsensitive)) base.chop(5);
+    if (QFileInfo(base).fileName().isEmpty()) return tr("Enter a mission name.");
+    const auto error = exportPlan(controller, base + "-plain.plan");
+    if (!error.isEmpty()) return error;
+    QSaveFile file(base + ".plan");
+    if (!file.open(QIODevice::WriteOnly)) return file.errorString();
+    const auto data = controller->saveToJson().toJson();
+    if (file.write(data) != data.size() || !file.commit()) return file.errorString();
     return {};
 }
 

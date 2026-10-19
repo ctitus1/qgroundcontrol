@@ -16,11 +16,11 @@ ColumnLayout {
         }
         RowLayout {
             QGCLabel { text: qsTr("Min altitude (m)"); Layout.fillWidth: true; wrapMode: Text.WordWrap }
-            QGCTextField { id: minimum; objectName: "fleetMinimum"; text: sourceSurvey ? sourceSurvey.values.altitude : "30"; Layout.preferredWidth: 90; validator: DoubleValidator { bottom: 0.1 } }
+            QGCTextField { id: minimum; objectName: "fleetMinimum"; text: "20"; Layout.preferredWidth: 90; validator: DoubleValidator { bottom: 0.1 } }
         }
         RowLayout {
             QGCLabel { text: qsTr("Max altitude (m)"); Layout.fillWidth: true; wrapMode: Text.WordWrap }
-            QGCTextField { id: maximum; objectName: "fleetMaximum"; text: String(Number(minimum.text) + 10 * (count.currentIndex+1)); Layout.preferredWidth: 90; validator: DoubleValidator { bottom: 0.1 } }
+            QGCTextField { id: maximum; objectName: "fleetMaximum"; text: "30"; Layout.preferredWidth: 90; validator: DoubleValidator { bottom: 0.1 } }
         }
         QGCLabel { Layout.fillWidth: true; wrapMode: Text.WordWrap; text: qsTr("Altitude layers assume all launch sites share the master home elevation. Takeoff and landing are not sequenced.") }
         QGCButton {

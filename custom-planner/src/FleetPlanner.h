@@ -34,7 +34,7 @@ public:
     Q_INVOKABLE void requestCreate(QObject* source, int count, double minimum, double maximum, double maximumGap);
     Q_INVOKABLE QString create(QObject* source, int count, double minimum, double maximum, double maximumGap);
     Q_INVOKABLE QString setCount(int count);
-    Q_INVOKABLE void setProfile(int drone, const QString& key, double value);
+    Q_INVOKABLE void setProfile(int drone, const QString& key, double value, bool deferred = false);
     Q_INVOKABLE void setLayers(double minimum, double maximum, double maximumGap);
     Q_INVOKABLE void setNight(bool night);
     bool night() const { return _night; }
@@ -45,7 +45,7 @@ public:
     Q_INVOKABLE void finishPartitionDrag() { synchronize(); }
     Q_INVOKABLE void applyDroneSettings(int drone, const QString& field = QString());
     Q_INVOKABLE void editRegion(int drone, int region);
-    Q_INVOKABLE QString exportAll(const QString& filename, bool standardItems = false);
+    Q_INVOKABLE QString exportAll(const QString& filename);
     Q_INVOKABLE QString exportDrone(int drone, const QString& filename, bool standardItems = false);
     bool enabled() const { return !_children.isEmpty(); }
     bool owns(PlanMasterController* controller) const;
@@ -55,7 +55,7 @@ public:
     PlanMasterController* activeController() const;
     QVariantList drones() const { return _profiles; }
     QVariantList overlays() const;
-    QString error() const { return _error; }
+    QString error() const { return _error.isEmpty() && enabled() ? validate() : _error; }
     double rapidTransitSpeed() const;
     void setRapidTransitSpeed(double speed);
     double fiducialRadius() const;
@@ -86,11 +86,14 @@ private:
     SplitInput partitionInput(int count) const;
     void movePartition(double distance, double azimuth);
     void notify();
+    double assignedAltitude(int drone) const;
     void clear(bool immediate = false);
     PlanMasterController* makeChild();
     QPointer<PlanMasterController> _master;
     QList<PlanMasterController*> _children;
     QVariantList _profiles;
+    QVariantMap _masterValues;
+    int _masterCamera = -1;
     QJsonObject _archive;
     QVariantList _publishedProfiles;
     QPointer<PlanMasterController> _publishedController;
@@ -101,7 +104,7 @@ private:
     QList<QGeoCoordinate> _partitionVertices, _partitionPolygon;
     mutable SplitInput _cachedInput;
     mutable QList<QList<QGeoCoordinate>> _cachedRegions;
-    double _minimum = 30, _maximum = 60, _maximumGap = 0;
+    double _minimum = 20, _maximum = 30, _maximumGap = 0;
     int _selected = 0;
     bool _updating = false;
     QString _error;

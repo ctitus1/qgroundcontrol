@@ -116,6 +116,7 @@ void schedulePlannerSmoke(QQmlApplicationEngine* engine, ChimeraPlanner*)
             for (auto* command : commands) if (command->command() == MAV_CMD_NAV_WAYPOINT)
                 check(command->param1() == 0 && command->param4() == 23, "Fiducial waypoint has no hold");
             commands.clear(); survey->appendMissionItems(commands, &owner);
+            for (auto* c : commands) check(c->command()!=MAV_CMD_DO_SET_CAM_TRIGG_DIST,"Survey has no camera trigger commands");
             check(commands.size() == survey->lastSequenceNumber() - survey->sequenceNumber() + 1, "Sequence count");
             int seq = survey->sequenceNumber(), roiCount = 0, armCount = 0;
             bool inspecting = false, returned = false;
@@ -347,6 +348,7 @@ void schedulePlannerSmoke(QQmlApplicationEngine* engine, ChimeraPlanner*)
             fleetMission->insertComplexMissionItem("Chimera fiducial", origin, 2);
             auto* domain = qobject_cast<ChimeraMissionItem*>(fleetMission->insertComplexMissionItem("Chimera survey", origin, 3));
             FleetPlanner fleet;
+            check(fleet.minimum()==20 && fleet.maximum()==30,"Default altitude layers are 20-30 m");
             check(fleet.create(domain, 3, 30, 60, 10).isEmpty(), "Create three drone missions");
             fleet.synchronize();
             check(fleet.validate().isEmpty(), fleet.validate());
@@ -368,6 +370,25 @@ void schedulePlannerSmoke(QQmlApplicationEngine* engine, ChimeraPlanner*)
                     check(region->coordinate().distanceTo(firstRegion->coordinate())<0.01,"Each drone starts all regions at the same camera-offset shared center");
                 }
             }
+            domain->setValue("yaw",30); fleet.synchronize();
+            check(fleet.drones()[0].toMap()["heading"].toDouble()==30 && fleet.drones()[1].toMap()["heading"].toDouble()==150,"Master heading rotates all drone paths");
+            fleet.setSelected(1);
+            auto* headingRegion=qobject_cast<ChimeraMissionItem*>(fleet.activeController()->missionController()->visualItems()->get(3));
+            headingRegion->setValue("yaw",45); fleet.synchronize();
+            check(fleet.drones()[0].toMap()["heading"].toDouble()==45 && fleet.drones()[1].toMap()["heading"].toDouble()==150,"Drone editor changes heading independently");
+            domain->setValue("yaw",60); fleet.synchronize();
+            check(headingRegion->values()["yaw"].toDouble()==75,"Master rotation preserves a drone heading offset");
+            headingRegion->setValue("altitude",32); fleet.synchronize();
+            check(fleet.drones()[0].toMap()["altitude"].toDouble()==32 && fleet.separation()==8,"Drone altitude edits update the layer gap");
+            fleet.setLayers(29,60,10); fleet.setLayers(30,60,10);
+            domain->setValue("yaw",0); fleet.synchronize();
+            headingRegion->setValue("yaw",0); fleet.synchronize();
+            fleet.setProfile(0,"heading",12,true);
+            check(fleet.drones()[0].toMap()["heading"].toDouble()==12 && headingRegion->values()["yaw"].toDouble()==0,"Slider edits publish immediately and batch route work");
+            QEventLoop sliderEvents; QTimer::singleShot(200,&sliderEvents,&QEventLoop::quit); sliderEvents.exec();
+            check(headingRegion->values()["yaw"].toDouble()==12,"Slider route updates run while the drag remains active");
+            fleet.setProfile(0,"heading",0);
+
             fleet.setFiducialRadius(3.5);
             auto* radiusMarker=qobject_cast<ChimeraMissionItem*>(fleet.activeController()->missionController()->visualItems()->get(2));
             check(std::abs(radiusMarker->coordinate().distanceTo(origin)-3.5)<0.01,"Changing radius updates drone positions");
@@ -476,6 +497,7 @@ void schedulePlannerSmoke(QQmlApplicationEngine* engine, ChimeraPlanner*)
             for (int i=0;i<plainItems.size();++i) {
                 const auto item=plainItems[i].toObject();
                 check(item["type"]=="SimpleItem" && !item.contains("complexItemType"),"Standard export uses only simple items");
+                check(item["command"].toInt()!=MAV_CMD_DO_SET_CAM_TRIGG_DIST,"Standard export has no camera trigger commands");
                 if (item["command"].toInt()==MAV_CMD_DO_CHANGE_SPEED) entrySpeed=item["params"].toArray()[1].toDouble();
                 if (item["command"].toInt()==MAV_CMD_NAV_DELAY && item["params"].toArray()[0].toDouble()==0) {
                     check(entrySpeed==1.7,"Every survey restores mission speed after its rapid transfer");
@@ -509,11 +531,16 @@ void schedulePlannerSmoke(QQmlApplicationEngine* engine, ChimeraPlanner*)
             fleet.setProfile(0,"uas",1);
             for (int uas=1;uas<=3;++uas) QFile::remove(QString("/tmp/chimera-master-smoke-uas%1.plan").arg(uas));
             check(fleet.exportAll("/tmp/chimera-master-smoke.plan").isEmpty(),"Export all drones from a mission name");
-            check(fleet.exportAll("/tmp/chimera-plain-smoke.plan",true).isEmpty(),"Export all drones as standard missions");
+            check(fleet.exportAll("/tmp/chimera-plain-smoke.plan").isEmpty(),"Export all drones as standard missions");
             check(QFile::exists("/tmp/chimera-plain-smoke-uas1-plain.plan"),"Standard fleet export uses distinct filenames");
             QFile exportedMaster("/tmp/chimera-master-smoke.plan"); check(exportedMaster.open(QIODevice::ReadOnly),"Batch export saves the editable master");
             check(QJsonDocument::fromJson(exportedMaster.readAll()).object()["mission"].toObject()["chimeraFleet"].toObject()["plans"].toArray().size()==3,"Exported master contains all drone plans");
-            for (int uas=1;uas<=3;++uas) check(QFile::exists(QString("/tmp/chimera-master-smoke-uas%1.plan").arg(uas)),"Aircraft export filename");
+            for (int uas=1;uas<=3;++uas) {
+                check(QFile::exists(QString("/tmp/chimera-master-smoke-uas%1.plan").arg(uas)),"Bundle saves editable drone plans");
+                check(QFile::exists(QString("/tmp/chimera-master-smoke-uas%1-plain.plan").arg(uas)),"Bundle saves standard drone plans");
+            }
+            check(ChimeraPlanner().exportMission(&plainController,"/tmp/chimera-single-bundle.plan").isEmpty(),"Export standalone editable and plain plans");
+            check(QFile::exists("/tmp/chimera-single-bundle.plan") && QFile::exists("/tmp/chimera-single-bundle-plain.plan"),"Standalone export saves both formats");
             context.setContextProperty("chimeraFleet", &fleet);
             QQmlComponent fleetBar(engine, QUrl("qrc:/Planner/FleetBar.qml"));
             check(fleetBar.isReady(), fleetBar.errorString());
@@ -594,11 +621,18 @@ void schedulePlannerSmoke(QQmlApplicationEngine* engine, ChimeraPlanner*)
                 check(liveFleet->validate().isEmpty(),liveFleet->validate());
             }
             QTimer::singleShot(3000,&viewEvents,&QEventLoop::quit); viewEvents.exec();
-            auto* fleetSettings=mainWindow->findChild<QObject*>("fleetSettings");
-            check(fleetSettings && QMetaObject::invokeMethod(fleetSettings,"open"),"Open fleet settings in the native editor");
-            QTimer::singleShot(150,&viewEvents,&QEventLoop::quit); viewEvents.exec();
+            liveFleet->setSelected(0);
+            QTimer::singleShot(200,&viewEvents,&QEventLoop::quit); viewEvents.exec();
+            QQuickItem* fleetSettings=nullptr;
+            QList<QQuickItem*> settingsItems{mainWindow->contentItem()};
+            for (int i=0;i<settingsItems.size();++i) {
+                auto* item=settingsItems[i]; settingsItems.append(item->childItems());
+                if (item->objectName()=="fleetSettings") fleetSettings=item;
+            }
+            check(fleetSettings,"Fleet setup remains in the survey editor");
+            check(fleetSettings->mapToItem(mainWindow->contentItem(),QPointF()).x()>mainWindow->width()/2,"Fleet setup is in the right panel");
             mainWindow->grabWindow().save("/tmp/qgc-fleet-settings.png");
-            check(QMetaObject::invokeMethod(fleetSettings,"close"),"Close fleet settings");
+            liveFleet->setSelected(1);
             qInfo() << "Native low-altitude fleet";
             liveFleet->setLayers(18,30,0);
             QTimer::singleShot(1500,&viewEvents,&QEventLoop::quit); viewEvents.exec();

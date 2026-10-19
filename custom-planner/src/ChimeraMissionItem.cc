@@ -67,12 +67,11 @@ QPair<QJsonArray, QJsonArray> cutRoute(const QJsonArray& commands, double fracti
 {
     const auto points = routePoints(commands);
     const double target = fraction * routeLength(points);
-    double travelled = 0, trigger = 0;
+    double travelled = 0;
     int waypoint = -1, cut = -1;
     QGeoCoordinate endpoint;
     for (int i = 0; i < commands.size(); ++i) {
         const auto item = commands[i].toObject();
-        if (item["command"].toInt() == MAV_CMD_DO_SET_CAM_TRIGG_DIST) trigger = item["params"].toArray()[0].toDouble();
         if (item["command"].toInt() != MAV_CMD_NAV_WAYPOINT) continue;
         ++waypoint;
         if (waypoint + 1 >= points.size()) break;
@@ -86,12 +85,10 @@ QPair<QJsonArray, QJsonArray> cutRoute(const QJsonArray& commands, double fracti
     if (cut < 0) return {};
     auto endCommand = commands[cut].toObject(); auto params = endCommand["params"].toArray();
     params[4] = endpoint.latitude(); params[5] = endpoint.longitude(); endCommand["params"] = params;
-    MissionItem triggerItem(0, MAV_CMD_DO_SET_CAM_TRIGG_DIST, MAV_FRAME_MISSION, 0,0,0,0,0,0,0,true,false);
-    QJsonObject stop, restart; triggerItem.save(stop); triggerItem.setParam1(trigger); triggerItem.save(restart);
     QJsonArray first, second;
     for (int i = 0; i <= cut; ++i) first.append(commands[i]);
-    first.append(endCommand); first.append(stop);
-    second.append(endCommand); second.append(restart);
+    first.append(endCommand);
+    second.append(endCommand);
     for (int i = cut + 1; i < commands.size(); ++i) second.append(commands[i]);
     return {first, second};
 }
@@ -381,6 +378,7 @@ void ChimeraMissionItem::rebuild()
                 if (item->command() != MAV_CMD_NAV_WAYPOINT && item->command() != MAV_CMD_DO_SET_CAM_TRIGG_DIST) {
                     _error = tr("Invalid command in a split survey."); built = false; break;
                 }
+                if (item->command() == MAV_CMD_DO_SET_CAM_TRIGG_DIST) continue;
                 generated.append(item);
                 if (item->command() == MAV_CMD_NAV_WAYPOINT) path.append(QVariant::fromValue(QGeoCoordinate(item->param5(), item->param6(), item->param7())));
             }
@@ -435,7 +433,6 @@ void ChimeraMissionItem::rebuild()
                         _error = tr("Check the inspection coordinates, altitude, and heading.");
                 }
             }
-            cmd(MAV_CMD_DO_SET_CAM_TRIGG_DIST, 0);
             cmd(MAV_CMD_DO_SET_ROI_NONE);
             if (_resume && !path.isEmpty()) {
                 cmd(MAV_CMD_DO_CHANGE_SPEED, 1, speed, -1);
@@ -443,16 +440,13 @@ void ChimeraMissionItem::rebuild()
             }
             restore();
             int checkpoint = -1;
-            double trigger = 0;
             for (auto* item : generated) {
                 _commands.append(new MissionItem(*item, this));
-                if (item->command() == MAV_CMD_DO_SET_CAM_TRIGG_DIST) trigger = item->param1();
                 if (item->command() != MAV_CMD_NAV_WAYPOINT) continue;
                 ++checkpoint;
                 for (const auto& value : _inspections) {
                     const auto b = value.toMap();
                     if (b["checkpoint"].toInt() != checkpoint) continue;
-                    cmd(MAV_CMD_DO_SET_CAM_TRIGG_DIST, 0);
                     for (const auto& value : b["points"].toList()) {
                         const auto p = value.toMap(); nav(coordinateOf(p), p["yaw"].toDouble(), p["roi"].toBool());
                     }
@@ -461,7 +455,6 @@ void ChimeraMissionItem::rebuild()
                     nav(resume, yaw);
                     restore();
                     nav(resume, yaw);
-                    cmd(MAV_CMD_DO_SET_CAM_TRIGG_DIST, trigger);
                 }
             }
         }
@@ -469,7 +462,6 @@ void ChimeraMissionItem::rebuild()
         _position.setAltitude(altitude);
         if (!_position.isValid() || _values["delay"].toDouble() <= 1) _error = tr("Set a valid position and a delay until greater than 1 second.");
         if (_kind == "vantage") cmd(MAV_CMD_NAV_DELAY, 1);
-        cmd(MAV_CMD_DO_SET_CAM_TRIGG_DIST, 0);
         cmd(MAV_CMD_DO_CHANGE_SPEED, 1, speed, -1);
         nav(_position, yaw);
         cmd(MAV_CMD_NAV_DELAY, _values["delay"].toDouble());
