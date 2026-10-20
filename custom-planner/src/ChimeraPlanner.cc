@@ -285,12 +285,12 @@ QString ChimeraPlanner::exportPlan(QObject* item, const QString& filename)
             visual->appendMissionItems(compiled, &owner);
         }
         auto* block = qobject_cast<ChimeraMissionItem*>(visual);
-        if (block && (block->kind() == "survey" || block->kind() == "vantage")) {
+        if (block && block->isSurveyItem()) {
             int firstWaypoint = -1, firstArm = -1, firstSpeed = -1;
             for (int j = firstCommand; j < compiled.size(); ++j) {
                 const auto command = compiled[j]->command();
                 if (firstWaypoint < 0 && command == MAV_CMD_NAV_WAYPOINT) firstWaypoint = j;
-                if (firstArm < 0 && command == MAV_CMD_NAV_DELAY && compiled[j]->param1() == (block->kind() == "vantage" ? 1 : 0)) firstArm = j;
+                if (firstArm < 0 && command == MAV_CMD_NAV_DELAY && compiled[j]->param1() == 0) firstArm = j;
                 if (firstSpeed < 0 && command == MAV_CMD_DO_CHANGE_SPEED) firstSpeed = j;
             }
             const double transitSpeed = block->values()["transitSpeed"].toDouble();

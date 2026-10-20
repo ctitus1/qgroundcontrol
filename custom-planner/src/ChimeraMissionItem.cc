@@ -125,7 +125,7 @@ ChimeraMissionItem::ChimeraMissionItem(PlanMasterController* master, bool flyVie
         if (key == "altitude") { metadata->setRawUnits("m"); metadata->setRawMin(0.1); }
         if (key == "radius") { metadata->setRawUnits("m"); metadata->setRawMin(0); }
         if (key == "speed" || key == "transitSpeed") { metadata->setRawUnits("m/s"); metadata->setRawMin(0.1); }
-        if (key == "delay") { metadata->setRawUnits("s"); metadata->setRawMin(1.01); }
+        if (key == "delay") { metadata->setRawUnits("s"); metadata->setRawMin(0.1); }
         if (key == "yaw" || key == "angle") { metadata->setRawUnits("deg"); metadata->setRawMin(0); metadata->setRawMax(359.99); }
         if (key == "pitch") { metadata->setRawUnits("deg"); metadata->setRawMin(-90); metadata->setRawMax(-0.01); }
         if (key == "overlap") { metadata->setRawUnits("%"); metadata->setRawMin(0); metadata->setRawMax(94.99); }
@@ -352,6 +352,7 @@ void ChimeraMissionItem::rebuild()
         auto* item = cmd(roi ? MAV_CMD_DO_SET_ROI_LOCATION : MAV_CMD_NAV_WAYPOINT);
         item->setFrame(MAV_FRAME_GLOBAL_RELATIVE_ALT);
         item->setParam4(heading); item->setParam5(c.latitude()); item->setParam6(c.longitude()); item->setParam7(c.altitude());
+        return item;
     };
     auto restore = [&] {
         cmd(MAV_CMD_DO_CHANGE_SPEED, 1, speed, -1);
@@ -456,15 +457,16 @@ void ChimeraMissionItem::rebuild()
         }
     } else if (_error.isEmpty()) {
         _position.setAltitude(altitude);
-        if (!_position.isValid() || _values["delay"].toDouble() <= 1) _error = tr("Set a valid position and a delay until greater than 1 second.");
+        if (!_position.isValid() || _values["delay"].toDouble() <= 0) _error = tr("Set a valid position and a positive loiter time.");
         if (_kind == "vantage") cmd(MAV_CMD_NAV_DELAY, 1);
-        cmd(MAV_CMD_DO_CHANGE_SPEED, 1, speed, -1);
-        nav(_position, yaw);
-        cmd(MAV_CMD_NAV_DELAY, _values["delay"].toDouble());
+        cmd(MAV_CMD_DO_CHANGE_SPEED, 1, _kind == "vantage" ? _values["transitSpeed"].toDouble() : speed, -1);
+        auto* hold = nav(_position, yaw);
+        hold->setCommand(MAV_CMD_NAV_LOITER_TIME);
+        hold->setParam1(_values["delay"].toDouble());
     }
     if (!_error.isEmpty()) { qDeleteAll(_commands); _commands.clear(); }
     for (auto* item : std::as_const(_commands)) {
-        if (item->command() == MAV_CMD_NAV_WAYPOINT)
+        if (item->command() == MAV_CMD_NAV_WAYPOINT || item->command() == MAV_CMD_NAV_LOITER_TIME)
             _route.append(QVariant::fromValue(QGeoCoordinate(item->param5(), item->param6(), item->param7())));
     }
     _cTerrainCollisionSegments = 0;

@@ -88,7 +88,7 @@ public:
     double greatestDistanceTo(const QGeoCoordinate& other) const override;
     int sequenceNumber() const override { return _sequence; }
     int lastSequenceNumber() const override { return _sequence + qMax(1, _commands.size()) - 1; }
-    double specifiedFlightSpeed() override { return _values.value("speed").toDouble(); }
+    double specifiedFlightSpeed() override { return _values.value(_kind == "vantage" ? "transitSpeed" : "speed").toDouble(); }
     double specifiedGimbalYaw() override { return isSurveyItem() ? 0 : qQNaN(); }
     double specifiedGimbalPitch() override { return isSurveyItem() ? _values.value("pitch").toDouble() : qQNaN(); }
     double specifiedVehicleYaw() override { return _values.value("yaw").toDouble(); }

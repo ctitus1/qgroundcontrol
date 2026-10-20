@@ -4,11 +4,11 @@ The `custom-planner` overlay adds native Chimera mission blocks to QGC 5.1.4. Th
 
 ## Use
 
-1. Add a takeoff and **Chimera fiducial** from the Pattern menu. Set position, altitude, heading, and **Delay until**. The delay uses `NAV_DELAY`, separate from waypoint hold time. Values 0 and 1 are reserved autonomy markers.
+1. Add a takeoff and **Chimera fiducial** from the Pattern menu. Set position, altitude, heading, and **Loiter time**. Each item uses one `NAV_LOITER_TIME` command with a positive duration. `NAV_DELAY(0)` and `NAV_DELAY(1)` remain reserved autonomy markers.
 2. Add **Chimera survey**. Edit its area polygon with the normal QGC polygon controls. Set altitude, heading, gimbal pitch, speed, track angle, and side overlap. Expand **Camera intrinsics** to enter the camera calibration. The panels use QGC Fact fields, units, validation, and collapsible sections.
 3. Select a survey part. Click a **+** handle on a flight leg to add a split point. Drag the split marker to move it along the route. Use its menu or **Remove end split** to remove it. Insert normal QGC ROI commands and inspection waypoints between the resulting mission-list items.
 4. Edit the full survey from any linked part. Changes to its polygon, position, altitude, heading, speed, overlap, or camera settings update all parts. Splits divide the regenerated route by relative distance along that route. Review their positions after changing the geometry.
-5. Add **Chimera vantage** after the survey. Its first command is `NAV_DELAY(1)` to arm vantage autonomy. Fiducial and vantage blocks emit no gimbal or ROI commands; `5g_drone` controls their gimbal pointing.
+5. Add **Chimera vantage** after the survey. Its first command is `NAV_DELAY(1)` to arm vantage autonomy. It then sets rapid transit speed and travels directly to its timed loiter. Fiducial and vantage blocks emit no gimbal or ROI commands; `5g_drone` controls their gimbal pointing.
 6. Save and upload the native plan through QGC. Each part stays one mission-list item. Commands expand for upload. For coordinated planning, use the fleet workflow below.
 
 Removing a split joins adjacent survey parts. If manual mission items lie between them, move or remove those items first. They are never deleted or reordered by split removal. Removing the last split restores the full editable survey. Deleting a linked part through QGC's normal delete action leaves a gap; upload rejects an incomplete group.
@@ -97,7 +97,7 @@ Set **Fiducial radius** in Master setup or **Drone offset radius** in the master
 
 **Rapid transit speed** defaults to 5 m/s. Set it in Master setup for all drones, or in a standalone survey panel. Plain exports add a transit to each survey entry, restore that survey's flight speed, and then send the 0-second mission arm marker. Split survey returns use the same transit speed. Every waypoint in the plain export has an explicit speed command. Existing speed controls and manual speed overrides remain available in the editable mission. The flight software controls the autonomy response to speed.
 
-Plain exports use rapid transit speed for transfers between surveys and vantage points. Each transfer reaches the destination before the mission speed returns and the 0-second survey or 1-second vantage marker runs.
+Plain exports use rapid transit speed for transfers between surveys and vantage points. Survey entries restore mission speed before the 0-second marker runs. Vantage travel retains rapid transit speed. Hold work waits until GPS and altitude place the aircraft within 2 m horizontally and vertically of the loiter position. Fiducial and vantage work do not depend on mission cruise speed.
 
 Fleet setup stays in the right mission editor after drone missions are created. The top selector switches between Master and individual drones. Select the master survey to edit shared settings, aircraft heading offsets, track angle offsets, or drone count. Master angle changes preserve manual offsets for each drone. Master flight and camera edits apply to all drones. Drone setup changes all regions for that drone. Region fields retain local speed and camera overrides.
 

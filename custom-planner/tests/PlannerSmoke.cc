@@ -120,10 +120,10 @@ void schedulePlannerSmoke(QQmlApplicationEngine* engine, ChimeraPlanner*)
             QObject owner;
             QList<MissionItem*> commands;
             fiducial->appendMissionItems(commands, &owner);
-            check(commands.last()->command() == MAV_CMD_NAV_DELAY && commands.last()->param1() == 45, "Fiducial delay until");
+            check(commands.size() == 2 && commands.last()->command() == MAV_CMD_NAV_LOITER_TIME &&
+                  commands.last()->param1() == 45 && commands.last()->param4() == 23, "Fiducial timed loiter and heading");
             for (auto* command : commands) check(command->command() != MAV_CMD_DO_MOUNT_CONTROL && command->command() != MAV_CMD_DO_SET_ROI_NONE, "No fiducial gimbal command");
-            for (auto* command : commands) if (command->command() == MAV_CMD_NAV_WAYPOINT)
-                check(command->param1() == 0 && command->param4() == 23, "Fiducial waypoint has no hold");
+            for (auto* command : commands) check(command->command() != MAV_CMD_NAV_WAYPOINT && command->command() != MAV_CMD_NAV_DELAY, "No fiducial entry waypoint or delay");
             commands.clear(); survey->appendMissionItems(commands, &owner);
             for (auto* c : commands) check(c->command()!=MAV_CMD_DO_SET_CAM_TRIGG_DIST,"Survey has no camera trigger commands");
             check(commands.size() == survey->lastSequenceNumber() - survey->sequenceNumber() + 1, "Sequence count");
@@ -209,6 +209,8 @@ void schedulePlannerSmoke(QQmlApplicationEngine* engine, ChimeraPlanner*)
             commands.clear(); vantage->appendMissionItems(commands, &owner);
             check(commands.first()->command() == MAV_CMD_NAV_DELAY && commands.first()->param1() == 1, "Vantage starts with autonomy marker");
             for (auto* c : commands) check(c->command() != MAV_CMD_DO_MOUNT_CONTROL && c->command() != MAV_CMD_DO_SET_ROI_NONE, "No vantage gimbal command");
+            check(commands.size() == 3 && commands[1]->command() == MAV_CMD_DO_CHANGE_SPEED &&
+                  commands[1]->param2() == 5 && commands.last()->command() == MAV_CMD_NAV_LOITER_TIME, "Vantage uses rapid transit and a timed loiter");
             vantage->setValue("speed",1.4);
             vantage->setValue("transitSpeed",6);
             auto* secondVantage=qobject_cast<ChimeraMissionItem*>(mission->insertComplexMissionItem("Chimera vantage",origin.atDistanceAndAzimuth(30,90),7));
@@ -216,17 +218,21 @@ void schedulePlannerSmoke(QQmlApplicationEngine* engine, ChimeraPlanner*)
             check(ChimeraPlanner().exportPlan(&plan,"/tmp/qgc-vantage-transits.plan").isEmpty(),"Export survey and vantage transfers");
             QFile vantageExport("/tmp/qgc-vantage-transits.plan"); check(vantageExport.open(QIODevice::ReadOnly),"Read vantage transfers");
             const auto transferItems=QJsonDocument::fromJson(vantageExport.readAll()).object()["mission"].toObject()["items"].toArray();
-            double transferSpeed=0; int vantageEntries=0;
-            for (int i=0;i<transferItems.size();++i) {
-                const auto item=transferItems[i].toObject(); const auto params=item["params"].toArray();
-                if (item["command"].toInt()==MAV_CMD_DO_CHANGE_SPEED) transferSpeed=params[1].toDouble();
-                if (item["command"].toInt()!=MAV_CMD_NAV_DELAY || params[0].toDouble()!=1) continue;
-                check(i>=3 && transferItems[i-2].toObject()["command"].toInt()==MAV_CMD_NAV_WAYPOINT,"Vantage transit reaches destination before arming");
-                check(transferItems[i-3].toObject()["params"].toArray()[1].toDouble()==6,"Vantage transfers use rapid speed");
-                check(transferSpeed==(vantageEntries==0?1.4:1.6),"Vantage restores its mission speed on arrival");
+            double transferSpeed = 0;
+            int vantageEntries = 0;
+            bool assessment = false;
+            for (const auto& value : transferItems) {
+                const auto item = value.toObject(); const auto params = item["params"].toArray();
+                const int command = item["command"].toInt();
+                if (command == MAV_CMD_DO_CHANGE_SPEED) transferSpeed = params[1].toDouble();
+                if (command == MAV_CMD_NAV_DELAY) assessment = params[0].toDouble() == 1;
+                if (!assessment) continue;
+                check(command != MAV_CMD_NAV_WAYPOINT, "Vantage has no duplicate entry waypoint");
+                if (command != MAV_CMD_NAV_LOITER_TIME) continue;
+                check(transferSpeed == 6, "Vantage loiter retains rapid transit speed");
                 ++vantageEntries;
             }
-            check(vantageEntries==2,"Both vantage transfers use rapid entry and speed restoration");
+            check(vantageEntries == 2, "Both vantage transfers use timed loiters");
             mission->removeVisualItem(7);
             saved = plan.saveToJson().object();
             check(mission->load(saved["mission"].toObject(), error), error);
