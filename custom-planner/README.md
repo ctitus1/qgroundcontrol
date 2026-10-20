@@ -4,11 +4,11 @@ The `custom` link selects `custom-planner`. The plugin keeps the standard QGC in
 
 ## Use
 
-1. Add a takeoff and **Chimera fiducial** from the Pattern menu. Set position, altitude, heading, and **Delay until**. The delay uses `NAV_DELAY`, separate from waypoint hold time. Values 0 and 1 are reserved autonomy markers.
+1. Add a takeoff and **Chimera fiducial** from the Pattern menu. Set position, altitude, heading, and **Loiter time**. The block emits one `NAV_LOITER_TIME` at the target. `NAV_DELAY(0)` and `NAV_DELAY(1)` remain reserved autonomy markers.
 2. Add **Chimera survey**. Edit its area polygon with the normal QGC polygon controls. Set altitude, heading, gimbal pitch, speed, track angle, and side overlap. Expand **Camera intrinsics** to enter the camera calibration. The panels use QGC Fact fields, units, validation, and collapsible sections.
 3. Select a survey part. Click a **+** handle on a flight leg to add a split point. Drag the split marker to move it along the route. Use its menu or **Remove end split** to remove it. Insert normal QGC ROI commands and inspection waypoints between the resulting mission-list items.
 4. Edit the full survey from any linked part. Changes to its polygon, position, altitude, heading, speed, overlap, or camera settings update all parts. Splits divide the regenerated route by relative distance along that route. Review their positions after changing the geometry.
-5. Add **Chimera vantage** after the survey. Its first command is `NAV_DELAY(1)` to arm vantage autonomy. Fiducial and vantage blocks emit no gimbal or ROI commands; `5g_drone` controls their gimbal pointing.
+5. Add **Chimera vantage** after the survey. Its first command is `NAV_DELAY(1)` to arm vantage autonomy, followed by a `NAV_LOITER_TIME` at the vantage position. Fiducial and vantage blocks emit no gimbal or ROI commands; `5g_drone` controls their gimbal pointing.
 6. Save and upload the native plan through QGC. Each part stays one mission-list item. Commands expand for upload. For coordinated planning, use the fleet workflow below.
 
 Removing a split joins adjacent survey parts. If manual mission items lie between them, move or remove those items first. They are never deleted or reordered by split removal. Removing the last split restores the full editable survey. Deleting a linked part through QGC's normal delete action leaves a gap; upload rejects an incomplete group.

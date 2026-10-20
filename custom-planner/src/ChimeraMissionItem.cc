@@ -357,6 +357,11 @@ void ChimeraMissionItem::rebuild()
         item->setFrame(MAV_FRAME_GLOBAL_RELATIVE_ALT);
         item->setParam4(heading); item->setParam5(c.latitude()); item->setParam6(c.longitude()); item->setParam7(c.altitude());
     };
+    auto loiter = [&](const QGeoCoordinate& c, double heading, double seconds) {
+        auto* item = cmd(MAV_CMD_NAV_LOITER_TIME, seconds);
+        item->setFrame(MAV_FRAME_GLOBAL_RELATIVE_ALT);
+        item->setParam4(heading); item->setParam5(c.latitude()); item->setParam6(c.longitude()); item->setParam7(c.altitude());
+    };
     auto restore = [&] {
         cmd(MAV_CMD_DO_CHANGE_SPEED, 1, speed, -1);
         cmd(MAV_CMD_DO_MOUNT_CONTROL, pitch);
@@ -460,15 +465,14 @@ void ChimeraMissionItem::rebuild()
         }
     } else if (_error.isEmpty()) {
         _position.setAltitude(altitude);
-        if (!_position.isValid() || _values["delay"].toDouble() <= 1) _error = tr("Set a valid position and a delay until greater than 1 second.");
+        if (!_position.isValid() || _values["delay"].toDouble() <= 1) _error = tr("Set a valid position and a loiter time greater than 1 second.");
         if (_kind == "vantage") cmd(MAV_CMD_NAV_DELAY, 1);
         cmd(MAV_CMD_DO_CHANGE_SPEED, 1, speed, -1);
-        nav(_position, yaw);
-        cmd(MAV_CMD_NAV_DELAY, _values["delay"].toDouble());
+        loiter(_position, yaw, _values["delay"].toDouble());
     }
     if (!_error.isEmpty()) { qDeleteAll(_commands); _commands.clear(); }
     for (auto* item : std::as_const(_commands)) {
-        if (item->command() == MAV_CMD_NAV_WAYPOINT)
+        if (item->command() == MAV_CMD_NAV_WAYPOINT || item->command() == MAV_CMD_NAV_LOITER_TIME)
             _route.append(QVariant::fromValue(QGeoCoordinate(item->param5(), item->param6(), item->param7())));
     }
     _cTerrainCollisionSegments = 0;

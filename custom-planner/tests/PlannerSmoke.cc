@@ -112,7 +112,12 @@ void schedulePlannerSmoke(QQmlApplicationEngine* engine, ChimeraPlanner*)
             QObject owner;
             QList<MissionItem*> commands;
             fiducial->appendMissionItems(commands, &owner);
-            check(commands.last()->command() == MAV_CMD_NAV_DELAY && commands.last()->param1() == 45, "Fiducial delay until");
+            check(commands.last()->command() == MAV_CMD_NAV_LOITER_TIME && commands.last()->param1() == 45, "Fiducial loiter time");
+            check(commands.last()->param4() == 23 &&
+                  commands.last()->param5() == fiducial->values()["latitude"].toDouble() &&
+                  commands.last()->param6() == fiducial->values()["longitude"].toDouble() &&
+                  commands.last()->param7() == fiducial->values()["altitude"].toDouble(),
+                  "Fiducial loiter preserves target and heading");
             for (auto* command : commands) check(command->command() != MAV_CMD_DO_MOUNT_CONTROL && command->command() != MAV_CMD_DO_SET_ROI_NONE, "No fiducial gimbal command");
             for (auto* command : commands) if (command->command() == MAV_CMD_NAV_WAYPOINT)
                 check(command->param1() == 0 && command->param4() == 23, "Fiducial waypoint has no hold");
