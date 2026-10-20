@@ -52,7 +52,7 @@ cmake -S . -B build -G Ninja \
 cmake --build build -j 12
 ```
 
-The executable is `build/Release/Custom-QGroundControl`. The stock taskbar application remains separate.
+The executable is `build/Release/QGroundControl`. It uses the standard QGC application name, settings, and default directories.
 
 The planner uses a registered `Chimera.Planner` QML module, as in QGC's custom-build example. Its lint settings reject missing imports and types. The fleet overlay imports QGC's waypoint-label controls. Existing map pools, partition handles, path display modes, and split controls remain.
 
