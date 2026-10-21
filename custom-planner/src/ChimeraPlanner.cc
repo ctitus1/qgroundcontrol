@@ -206,10 +206,11 @@ QVariantMap ChimeraPlanner::preview(SurveyComplexItem* survey, const QVariantLis
             {"offset", std::hypot(shape.center.x(), shape.center.y())}, {"error", ""}};
 }
 
-QString ChimeraPlanner::compileMission(PlanMasterController* controller, QList<MissionItem*>& compiled, QObject* owner)
+QString ChimeraPlanner::compileMission(PlanMasterController* controller, QList<MissionItem*>& compiled, QObject* owner, int visualItemCount)
 {
     auto* visualItems = controller->missionController()->visualItems();
-    for (int i = 0; i < visualItems->count(); ++i) {
+    const int itemCount = visualItemCount < 0 ? visualItems->count() : std::min(visualItemCount, visualItems->count());
+    for (int i = 0; i < itemCount; ++i) {
         auto* visual = qobject_cast<VisualMissionItem*>(visualItems->get(i));
         if (auto* block = qobject_cast<ChimeraMissionItem*>(visual)) {
             if (!block->error().isEmpty()) return block->error();
@@ -237,18 +238,18 @@ QString ChimeraPlanner::compileMission(PlanMasterController* controller, QList<M
             visual->appendMissionItems(compiled, owner);
         }
     }
-    if (auto* home = qobject_cast<MissionSettingsItem*>(visualItems->get(0)))
+    if (auto* home = qobject_cast<MissionSettingsItem*>(visualItems->get(0)); home && itemCount == visualItems->count())
         home->addMissionEndAction(compiled, compiled.size(), owner);
     return {};
 }
 
-QVariantList ChimeraPlanner::speedSegments(QObject* object)
+QVariantList ChimeraPlanner::speedSegments(QObject* object, int visualItemCount)
 {
     auto* controller = qobject_cast<PlanMasterController*>(object);
     if (!controller) return {};
     QObject owner;
     QList<MissionItem*> commands;
-    if (!compileMission(controller, commands, &owner).isEmpty()) return {};
+    if (!compileMission(controller, commands, &owner, visualItemCount).isEmpty()) return {};
     auto* vehicle = controller->controllerVehicle();
     if (!vehicle) return {};
     double speed = qQNaN();

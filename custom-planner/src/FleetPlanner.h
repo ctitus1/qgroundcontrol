@@ -16,7 +16,7 @@ class FleetPlanner : public QObject
     Q_PROPERTY(int selected READ selected WRITE setSelected NOTIFY controllersChanged)
     Q_PROPERTY(PlanMasterController* activeController READ activeController NOTIFY activeControllerChanged)
     Q_PROPERTY(QVariantList drones READ drones NOTIFY profilesChanged)
-    Q_PROPERTY(QVariantList previewControllers READ previewControllers NOTIFY changed)
+    Q_PROPERTY(QVariantList previewMissions READ previewMissions NOTIFY changed)
     Q_PROPERTY(QVariantList overlays READ overlays NOTIFY changed)
     Q_PROPERTY(int pathDisplay READ pathDisplay WRITE setPathDisplay NOTIFY changed)
     Q_PROPERTY(bool night READ night WRITE setNight NOTIFY profilesChanged)
@@ -61,7 +61,7 @@ public:
     void setSelected(int selected);
     PlanMasterController* activeController() const;
     QVariantList drones() const { return _profiles; }
-    QVariantList previewControllers() const;
+    QVariantList previewMissions() const;
     QVariantList overlays() const;
     QString error() const { return _error.isEmpty() && enabled() ? validate() : _error; }
     double rapidTransitSpeed() const;

@@ -97,6 +97,20 @@ void upgradeTrackAngle(QVariantMap& profile, const QJsonObject& plan)
         break;
     }
 }
+int visibleMissionItemCount(PlanMasterController* controller, FleetPlanner::PathDisplay display)
+{
+    if (!controller || display == FleetPlanner::NoPaths) return 0;
+    auto* items = controller->missionController()->visualItems();
+    if (display == FleetPlanner::WholePath) return items->count();
+    int firstRegion = -1;
+    for (int i = 1; i < items->count(); ++i) {
+        auto* block = qobject_cast<ChimeraMissionItem*>(items->get(i));
+        if (!block || block->fleetRegion() < 0) continue;
+        if (firstRegion < 0) firstRegion = block->fleetRegion();
+        else if (block->fleetRegion() != firstRegion) return i;
+    }
+    return items->count();
+}
 QString color(int i) { return QStringList{"#00d8ef", "#ffb040", "#eb79c6", "#80d56b", "#a68cff", "#ff7865", "#d9d35b", "#73b5ff"}[i % 8]; }
 QList<ChimeraMissionItem*> blocks(PlanMasterController* plan) {
     QList<ChimeraMissionItem*> result;
@@ -544,13 +558,17 @@ void FleetPlanner::synchronize()
             profile["heading"]=CenterOut::normalizeAngle(inward+domain()->values()["yaw"].toDouble());
         if (profile.value("automaticTrackAngle",false).toBool())
             profile["trackAngle"]=CenterOut::normalizeAngle(inward+domain()->values()["angle"].toDouble());
-        const double altitude=assignedAltitude(i); profile["altitude"]=altitude; _profiles[i]=profile;
+        const double altitude=assignedAltitude(i);
+        const auto droneBlocks = blocks(_children[i]);
+        double previousAltitude = altitude;
+        for (auto* block : droneBlocks) if (block->fleetRegion() == -2) previousAltitude = block->values()["altitude"].toDouble();
+        profile["altitude"]=altitude; _profiles[i]=profile;
         auto* mission=_children[i]->missionController(); auto* items=mission->visualItems();
         auto* settings=qobject_cast<MissionSettingsItem*>(items->get(0));
         QGeoCoordinate launch(profile["latitude"].toDouble(),profile["longitude"].toDouble(),homeAltitude);
         settings->setCoordinate(launch);
         settings->plannedHomePositionAltitude()->setRawValue(homeAltitude);
-        for (auto* block : blocks(_children[i])) {
+        for (auto* block : droneBlocks) {
             if (block->fleetRegion()==-2) {
                 block->setCoordinate(fiducial()->coordinate().atDistanceAndAzimuth(fiducialRadius(),inward+180+fiducialRotation()));
                 block->setValue("delay",fiducial()->values()["delay"].toDouble());
@@ -566,7 +584,9 @@ void FleetPlanner::synchronize()
         for (int j=1;j<items->count();++j) if (auto* simple=qobject_cast<SimpleMissionItem*>(items->get(j))) {
             const auto command=simple->missionItem().command();
             if (command==MAV_CMD_NAV_TAKEOFF) simple->setCoordinate(launch);
-            if (command==MAV_CMD_NAV_TAKEOFF || command==MAV_CMD_NAV_WAYPOINT) {
+            if (command==MAV_CMD_NAV_TAKEOFF || (command==MAV_CMD_NAV_WAYPOINT &&
+                simple->altitudeFrame()==QGroundControlQmlGlobal::AltitudeFrameRelative &&
+                std::abs(simple->altitude()->rawValue().toDouble()-previousAltitude)<0.01)) {
                 simple->setAltitudeFrame(QGroundControlQmlGlobal::AltitudeFrameRelative);
                 simple->applyNewAltitude(altitude);
             }
@@ -624,26 +644,26 @@ void FleetPlanner::watch()
         }
     }
 }
-QVariantList FleetPlanner::previewControllers() const
+QVariantList FleetPlanner::previewMissions() const
 {
-    QVariantList controllers;
-    if (_selected > 0) controllers.append(QVariant::fromValue(activeController()));
-    else for (auto* child : _children) controllers.append(QVariant::fromValue(child));
-    return controllers;
+    QVariantList previews;
+    if (_pathDisplay == NoPaths) return previews;
+    for (int i = 0; i < _children.size(); ++i) {
+        if (_selected > 0 && _selected != i + 1) continue;
+        previews.append(QVariantMap{{"controller", QVariant::fromValue(_children[i])},
+            {"itemCount", visibleMissionItemCount(_children[i], _pathDisplay)}});
+    }
+    return previews;
 }
 QVariantList FleetPlanner::overlays() const
 {
     QVariantList result;
     for (int i=0;i<_children.size();++i) {
         QVariantList path, moving; auto* items=_children[i]->missionController()->visualItems();
-        int firstRegion=-1;
-        for (int j=1;_pathDisplay!=NoPaths && j<items->count();++j) {
+        const int itemCount = visibleMissionItemCount(_children[i], _pathDisplay);
+        for (int j=1;j<itemCount;++j) {
             auto* visual=qobject_cast<VisualMissionItem*>(items->get(j));
             auto* block=qobject_cast<ChimeraMissionItem*>(visual);
-            if (block && block->fleetRegion()>=0) {
-                if (firstRegion<0) firstRegion=block->fleetRegion();
-                else if (_pathDisplay==FirstSectorPath && block->fleetRegion()!=firstRegion) break;
-            }
             const int previousCount=path.size();
             if (block) path.append(block->route());
             else if (auto* simple=qobject_cast<SimpleMissionItem*>(visual); simple && simple->missionItem().command()==MAV_CMD_NAV_RETURN_TO_LAUNCH)

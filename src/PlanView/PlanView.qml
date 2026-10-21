@@ -262,7 +262,7 @@ Item {
         onLoaded: {
             item.planner = chimeraPlanner
             item.map = editorMap
-            item.controllers = Qt.binding(() => _fleet && _fleet.enabled ? _fleet.previewControllers : [_planMasterController])
+            item.missions = Qt.binding(() => _fleet && _fleet.enabled ? _fleet.previewMissions : [{controller: _planMasterController, itemCount: -1}])
         }
     }
 

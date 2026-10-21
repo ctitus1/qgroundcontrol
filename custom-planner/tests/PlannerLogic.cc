@@ -46,6 +46,22 @@ QList<MissionItem*> commands(PlanMasterController& plan, QObject* owner)
     qobject_cast<MissionSettingsItem*>(visuals->get(0))->addMissionEndAction(items, items.size(), owner);
     return items;
 }
+QVariantList previewSegments(FleetPlanner& fleet, ChimeraPlanner& planner)
+{
+    QVariantList segments;
+    for (const auto& value : fleet.previewMissions()) {
+        const auto preview = value.toMap();
+        segments.append(planner.speedSegments(preview["controller"].value<PlanMasterController*>(), preview["itemCount"].toInt()));
+    }
+    return segments;
+}
+bool containsCoordinate(const QVariantList& segments, const QGeoCoordinate& coordinate)
+{
+    for (const auto& value : segments)
+        for (const auto& point : value.toMap()["path"].toList())
+            if (point.value<QGeoCoordinate>().distanceTo(coordinate) < 0.01) return true;
+    return false;
+}
 void checkSurvey(ChimeraMissionItem* block)
 {
     QObject owner;
@@ -187,6 +203,62 @@ void runPlannerLogic(QQmlApplicationEngine* engine)
         }
         require(rotated[0].toMap()["heading"].toDouble() == 75, "Rotation preserves a manual survey heading");
         require(fleet.validate().isEmpty(), "Fleet remains valid after rotation");
+        fleet.setSelected(0);
+        require(fleet.previewMissions().size() == 3, "Master speed overlay includes all drones");
+        fleet.setSelected(1);
+        require(fleet.previewMissions().size() == 1 && fleet.previewMissions()[0].toMap()["controller"].value<PlanMasterController*>() == fleet.activeController(), "Drone selector limits the speed overlay");
+        auto* childMission = fleet.activeController()->missionController();
+        auto* sector = qobject_cast<ChimeraMissionItem*>(childMission->visualItems()->get(3));
+        const auto sectorPath = sector->preview()["path"].toList();
+        const auto splitFrom = sectorPath[0].value<QGeoCoordinate>(), splitTo = sectorPath[1].value<QGeoCoordinate>();
+        require(sector->addSplitPoint(splitFrom.atDistanceAndAzimuth(splitFrom.distanceTo(splitTo) / 2, splitFrom.azimuthTo(splitTo))).isEmpty(), "Split a sector for custom inspection waypoints");
+        const auto customPosition = origin.atDistanceAndAzimuth(170, 32);
+        const auto removedPosition = origin.atDistanceAndAzimuth(195, 32);
+        auto* custom = qobject_cast<SimpleMissionItem*>(childMission->insertSimpleMissionItem(customPosition, 4));
+        custom->altitude()->setRawValue(21.5);
+        custom->missionItem().setParam4(123);
+        custom->speedSection()->setSpecifyFlightSpeed(true);
+        custom->speedSection()->flightSpeed()->setRawValue(2.4);
+        auto* removable = childMission->insertSimpleMissionItem(removedPosition, 5);
+        childMission->insertROIMissionItem(origin, 6);
+        fleet.synchronize();
+        require(custom->altitude()->rawValue().toDouble() == 21.5 && custom->missionItem().param4() == 123 && custom->speedSection()->flightSpeed()->rawValue().toDouble() == 2.4, "Fleet updates preserve custom altitude, heading, and speed");
+        fleet.setPathDisplay(FleetPlanner::FirstSectorPath);
+        const int firstSectorEnd = fleet.previewMissions()[0].toMap()["itemCount"].toInt();
+        auto* fleetContinuation = qobject_cast<ChimeraMissionItem*>(childMission->visualItems()->get(7));
+        require(fleetContinuation && fleetContinuation->fleetRegion() == sector->fleetRegion() && firstSectorEnd == 8, "Sector filtering includes split continuations and custom items");
+        const auto laterPosition = origin.atDistanceAndAzimuth(650, 233);
+        childMission->insertSimpleMissionItem(laterPosition, firstSectorEnd + 1);
+        fleet.synchronize();
+        auto filtered = previewSegments(fleet, planner);
+        require(containsCoordinate(filtered, customPosition) && containsCoordinate(filtered, removedPosition) && !containsCoordinate(filtered, laterPosition), "First sector overlay includes its inspection path and hides later sectors");
+        fleet.setPathDisplay(FleetPlanner::WholePath);
+        require(containsCoordinate(previewSegments(fleet, planner), laterPosition), "Whole path includes later custom waypoints");
+        fleet.setPathDisplay(FleetPlanner::NoPaths);
+        require(fleet.previewMissions().isEmpty() && previewSegments(fleet, planner).isEmpty(), "No paths hides the speed overlay");
+        fleet.setPathDisplay(FleetPlanner::FirstSectorPath);
+        const auto editedPosition = origin.atDistanceAndAzimuth(180, 43);
+        custom->setCoordinate(editedPosition);
+        childMission->removeVisualItem(childMission->visualItems()->indexOf(removable));
+        fleet.synchronize();
+        filtered = previewSegments(fleet, planner);
+        require(containsCoordinate(filtered, editedPosition) && !containsCoordinate(filtered, customPosition) && !containsCoordinate(filtered, removedPosition), "Overlay follows custom waypoint moves and removals");
+        auto* inherited = qobject_cast<SimpleMissionItem*>(childMission->insertSimpleMissionItem(origin.atDistanceAndAzimuth(155, 24), 4));
+        inherited->altitude()->setRawValue(20.);
+        fleet.setProfile(0, "altitude", 22);
+        require(inherited->altitude()->rawValue().toDouble() == 22 && custom->altitude()->rawValue().toDouble() == 21.5, "Layer changes update inherited heights and retain explicit waypoint heights");
+        require(planner.exportPlan(fleet.activeController(), directory.filePath("custom-fleet.plan")).isEmpty(), "Filtered views still export the complete custom mission");
+        QFile customFile(directory.filePath("custom-fleet.plan"));
+        require(customFile.open(QIODevice::ReadOnly), "Read custom fleet mission");
+        const auto customItems = QJsonDocument::fromJson(customFile.readAll()).object()["mission"].toObject()["items"].toArray();
+        bool exportedLater = false;
+        for (const auto& value : customItems) {
+            const auto params = value.toObject()["params"].toArray();
+            if (QGeoCoordinate(params[4].toDouble(), params[5].toDouble()).distanceTo(laterPosition) < 0.01) exportedLater = true;
+        }
+        require(exportedLater, "Sector display filters never truncate exported missions");
+        fleet.setSelected(0);
+        require(fleet.previewMissions().size() == 3, "Master restores all drone overlays");
         QJsonArray savedFiducial;
         for (int i = 1; i < master.missionController()->visualItems()->count(); ++i) {
             auto* block = qobject_cast<ChimeraMissionItem*>(master.missionController()->visualItems()->get(i));
@@ -199,6 +271,15 @@ void runPlannerLogic(QQmlApplicationEngine* engine)
         require(fleet.setCount(2).isEmpty() && fleet.setCount(3).isEmpty(), "Resize fleet after fiducial rotation");
         fleet.synchronize();
         require(fleet.fiducialPositions().size() == 3 && fleet.fiducialRotation() == 45 && fleet.validate().isEmpty(), "Fleet changes retain rotation and valid altitude layers");
+        fleet.setSelected(1);
+        bool restoredCustom = false;
+        auto* restoredItems = fleet.activeController()->missionController()->visualItems();
+        for (int i = 1; i < restoredItems->count(); ++i) {
+            auto* waypoint = qobject_cast<SimpleMissionItem*>(restoredItems->get(i));
+            if (!waypoint || waypoint->coordinate().distanceTo(editedPosition) >= 0.01) continue;
+            restoredCustom = waypoint->altitude()->rawValue().toDouble() == 21.5 && waypoint->missionItem().param4() == 123 && waypoint->speedSection()->flightSpeed()->rawValue().toDouble() == 2.4;
+        }
+        require(restoredCustom, "Fleet resizing preserves custom waypoints and their settings");
         require(!engine->rootObjects().isEmpty() && QMetaObject::invokeMethod(engine->rootObjects().first(), "finishCloseProcess"), "Close through the standard QGC shutdown pipeline");
         qInfo("PLANNER_LOGIC_PASS");
     } catch (const std::exception& error) {

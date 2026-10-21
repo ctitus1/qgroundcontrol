@@ -9,13 +9,16 @@ Item {
     id: root
     property var planner: null
     property var map: null
-    property var controllers: []
+    property var missions: []
     property var lines: []
 
+    function scheduleRefresh() {
+        if (!refreshTimer.running) refreshTimer.start()
+    }
     function refresh() {
         if (!map || !planner) return
         let segments = []
-        for (const controller of controllers) segments = segments.concat(root.planner.speedSegments(controller))
+        for (const mission of missions) segments = segments.concat(root.planner.speedSegments(mission.controller, mission.itemCount))
         while (lines.length > segments.length) {
             const item = lines.pop()
             map.removeMapItem(item)
@@ -31,22 +34,22 @@ Item {
             lines[i].line.color = segments[i].color
         }
     }
-    onPlannerChanged: refreshTimer.restart()
-    onMapChanged: refreshTimer.restart()
-    onControllersChanged: refreshTimer.restart()
+    onPlannerChanged: root.scheduleRefresh()
+    onMapChanged: root.scheduleRefresh()
+    onMissionsChanged: root.scheduleRefresh()
     Component.onDestruction: {
         if (map) for (const item of lines) { map.removeMapItem(item); item.destroy() }
     }
     Instantiator {
-        model: root.controllers
+        model: root.missions
         delegate: Connections {
             required property var modelData
-            target: modelData ? modelData.missionController : null
-            function onMissionTimeChanged() { refreshTimer.restart() }
-            function onVisualItemsReset() { refreshTimer.restart() }
-            function onPlannedHomePositionChanged() { refreshTimer.restart() }
+            target: modelData && modelData.controller ? modelData.controller.missionController : null
+            function onMissionTimeChanged() { root.scheduleRefresh() }
+            function onVisualItemsReset() { root.scheduleRefresh() }
+            function onPlannedHomePositionChanged() { root.scheduleRefresh() }
         }
     }
     Timer { id: refreshTimer; interval: 100; onTriggered: root.refresh() }
-    Component { id: line; MapPolyline { z: QGroundControl.zOrderMapItems + 0.5; line.width: 8; opacity: 0.85 } }
+    Component { id: line; MapPolyline { z: 4; line.width: 8; opacity: 0.85 } }
 }
