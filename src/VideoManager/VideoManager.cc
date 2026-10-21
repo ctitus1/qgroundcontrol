@@ -278,6 +278,9 @@ void VideoManager::_createVideoReceivers()
         return;
     }
 #endif
+    if (!_mainWindow) {
+        return;
+    }
     static const QStringList videoStreamList = {
         "videoContent",
         "thermalVideo"
@@ -307,6 +310,7 @@ void VideoManager::_createVideoReceivers()
 
 void VideoManager::cleanup()
 {
+    _mainWindow = nullptr;
     for (VideoReceiver *receiver : std::as_const(_videoReceivers)) {
         QGCCorePlugin::instance()->releaseVideoSink(receiver->sink());
     }

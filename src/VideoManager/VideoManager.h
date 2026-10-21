@@ -7,6 +7,7 @@
 #include <QtCore/QMutex>
 #include <QtCore/QPromise>
 #include <QtCore/QObject>
+#include <QtCore/QPointer>
 #include <QtCore/QSize>
 #include <QtQmlIntegration/QtQmlIntegration>
 
@@ -128,7 +129,7 @@ private:
     QList<VideoReceiver*> _videoReceivers;
     SubtitleWriter *_subtitleWriter = nullptr;
     VideoSettings *_videoSettings = nullptr;
-    QQuickWindow *_mainWindow = nullptr;
+    QPointer<QQuickWindow> _mainWindow;
     Vehicle *_activeVehicle = nullptr;
 
     std::atomic<InitState> _initState = InitState::NotStarted;
