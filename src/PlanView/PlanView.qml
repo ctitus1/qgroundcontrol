@@ -246,7 +246,7 @@ Item {
         id: fleetBar
         anchors.top: planToolBar.bottom
         anchors.horizontalCenter: parent.horizontalCenter
-        active: _fleet !== null && _fleet.enabled
+        active: _fleet !== null
         source: "qrc:/qml/Chimera/Planner/FleetBar.qml"
         onLoaded: item.fitRequested.connect(planMasterController.fitViewportToItems)
     }
@@ -256,16 +256,8 @@ Item {
         onLoaded: item.map = editorMap
     }
 
-    QGCCheckBox {
-        id: speedOverlayToggle
-        objectName: "speedOverlayToggle"
-        anchors.top: fleetBar.active ? fleetBar.bottom : planToolBar.bottom
-        anchors.horizontalCenter: parent.horizontalCenter
-        text: qsTr("Speed overlay: green ≤3 m/s, red >3 m/s or unset")
-        visible: typeof chimeraPlanner !== "undefined"
-    }
     Loader {
-        active: speedOverlayToggle.checked
+        active: fleetBar.item !== null && fleetBar.item.speedOverlayEnabled
         source: "qrc:/qml/Chimera/Planner/SpeedOverlay.qml"
         onLoaded: {
             item.planner = chimeraPlanner

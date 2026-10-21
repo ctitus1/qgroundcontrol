@@ -7,6 +7,7 @@ Rectangle {
     id: root
     objectName: "fleetToolbar"
     signal fitRequested()
+    property alias speedOverlayEnabled: speedOverlayButton.checked
     property real margin: ScreenTools.defaultFontPixelHeight / 3
     width: Math.min(bar.implicitWidth + margin * 2, typeof mainWindow !== "undefined" ? mainWindow.width - margin * 2 : bar.implicitWidth + margin * 2)
     height: bar.implicitHeight + margin * 2
@@ -20,6 +21,7 @@ Rectangle {
         spacing: root.margin
         QGCComboBox {
             objectName: "fleetSelector"
+            visible: chimeraFleet.enabled
             sizeToContents: true
             model: [qsTr("Master")].concat(chimeraFleet.drones.map(d => d.name))
             currentIndex: chimeraFleet.selected
@@ -32,6 +34,7 @@ Rectangle {
         }
         QGCComboBox {
             objectName: "fleetPathDisplay"
+            visible: chimeraFleet.enabled
             model: [qsTr("Whole path"), qsTr("First sector path"), qsTr("No paths")]
             currentIndex: chimeraFleet.pathDisplay
             onActivated: index => chimeraFleet.pathDisplay = index
@@ -43,7 +46,16 @@ Rectangle {
             Accessible.name: qsTr("Flight path display")
         }
         QGCButton {
+            id: speedOverlayButton
+            objectName: "speedOverlayToggle"
+            text: qsTr("Speed overlay")
+            checkable: true
+            Layout.fillHeight: true
+            Accessible.name: qsTr("Show survey and transit speeds")
+        }
+        QGCButton {
             objectName: "fleetExport"
+            visible: chimeraFleet.enabled
             text: qsTr("Export missions…")
             Layout.fillHeight: true
             onClicked: outputDialog.openForSave()

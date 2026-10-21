@@ -97,7 +97,7 @@ Set **Fiducial radius** in Master setup or **Drone offset radius** in the master
 
 Survey speed defaults to 1 m/s. Rapid transit speed defaults to 5 m/s. A survey travels to its first route point at rapid transit speed, then sets survey speed and the zero-second autonomy marker. The final survey waypoint completes before rapid transit speed returns. ROI interruptions and transfers between sectors use rapid transit speed. The next survey sets its own speed after arrival at its entry point. Manual waypoints retain their speed settings. Fiducial and vantage travel use rapid transit speed.
 
-The Speed overlay switch shows green paths for explicit speeds above zero and at or below 3 m/s. Red paths show faster or unset speeds. The limit matches 5g_drone. The overlay reads the same command stream as the plain export, including manual waypoint speed settings. Master view shows all drone missions. A drone view shows that drone's mission.
+The **Speed overlay** toggle button in the top bar shows green paths for explicit speeds above zero and at or below 3 m/s. Red paths show faster or unset speeds. The limit matches 5g_drone. The overlay reads the same command stream as the plain export, including manual waypoint speed settings. Master view shows all drone missions. A drone view shows that drone's mission.
 
 Fiducial position rotation turns the drone positions around the shared fiducial. Position order follows the assigned survey sectors. Aircraft headings remain the headings of their surveys. The map shows each drone's position and heading. New ROI items default to 0 m relative altitude.
 
