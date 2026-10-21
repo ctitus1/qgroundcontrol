@@ -238,6 +238,29 @@ void FleetPlanner::requestCreate(QObject* source,int count,double minimum,double
         if (!error.isEmpty()) QGC::showAppMessage(error);
     });
 }
+QVariantList FleetPlanner::fiducialPositions() const
+{
+    QVariantList positions;
+    for (int i = 0; i < _children.size(); ++i) {
+        for (auto* block : blocks(_children[i])) {
+            if (block->fleetRegion() != -2) continue;
+            positions.append(QVariantMap{{"coordinate", QVariant::fromValue(block->coordinate())},
+                {"heading", block->values()["yaw"]}, {"name", _profiles[i].toMap()["name"]},
+                {"color", color(i)}, {"drone", i + 1}});
+        }
+    }
+    return positions;
+}
+double FleetPlanner::fiducialRotation() const
+{
+    return fiducial() ? fiducial()->values()["fiducialRotation"].toDouble() : 0.;
+}
+void FleetPlanner::setFiducialRotation(double angle)
+{
+    if (!fiducial() || !std::isfinite(angle)) return;
+    fiducial()->setValue("fiducialRotation", CenterOut::normalizeAngle(angle));
+    synchronize();
+}
 double FleetPlanner::fiducialRadius() const
 {
     return fiducial() ? fiducial()->values()["radius"].toDouble() : 2.;
@@ -529,9 +552,9 @@ void FleetPlanner::synchronize()
         settings->plannedHomePositionAltitude()->setRawValue(homeAltitude);
         for (auto* block : blocks(_children[i])) {
             if (block->fleetRegion()==-2) {
-                block->setCoordinate(fiducial()->coordinate().atDistanceAndAzimuth(fiducialRadius(),profile["heading"].toDouble()+180));
+                block->setCoordinate(fiducial()->coordinate().atDistanceAndAzimuth(fiducialRadius(),inward+180+fiducialRotation()));
                 block->setValue("delay",fiducial()->values()["delay"].toDouble());
-                block->setValue("speed",profile["speed"].toDouble());
+                block->setValue("transitSpeed",rapidTransitSpeed());
             } else if (block->fleetRegion()>=0 && block->fleetRegion()<polygons.size()) {
                 block->setSearchCenter(searchCenter);
                 if (block->surveyAreaPolygon()->coordinateList()!=polygons[block->fleetRegion()]) block->surveyAreaPolygon()->setPath(polygons[block->fleetRegion()]);
@@ -600,6 +623,13 @@ void FleetPlanner::watch()
             }
         }
     }
+}
+QVariantList FleetPlanner::previewControllers() const
+{
+    QVariantList controllers;
+    if (_selected > 0) controllers.append(QVariant::fromValue(activeController()));
+    else for (auto* child : _children) controllers.append(QVariant::fromValue(child));
+    return controllers;
 }
 QVariantList FleetPlanner::overlays() const
 {

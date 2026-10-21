@@ -17,6 +17,7 @@ public:
     Q_INVOKABLE QVariantMap settings(QObject* item) const;
     Q_INVOKABLE void setSetting(QObject* item, const QString& key, const QVariant& value);
     Q_INVOKABLE QVariantMap preview(QObject* item);
+    Q_INVOKABLE QVariantList speedSegments(QObject* controller);
     Q_INVOKABLE QString exportMission(QObject* item, const QString& filename);
     Q_INVOKABLE QString exportPlan(QObject* item, const QString& filename);
     void saveSettings(PlanMasterController* controller, QJsonObject& mission);
@@ -27,5 +28,6 @@ public:
 signals:
     void settingsChanged(QObject* item);
 private:
+    QString compileMission(PlanMasterController* controller, QList<MissionItem*>& items, QObject* owner);
     CoverageGeometry::Footprint footprint(SurveyComplexItem* survey) const;
 };

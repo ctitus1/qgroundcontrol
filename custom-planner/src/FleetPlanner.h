@@ -16,6 +16,7 @@ class FleetPlanner : public QObject
     Q_PROPERTY(int selected READ selected WRITE setSelected NOTIFY controllersChanged)
     Q_PROPERTY(PlanMasterController* activeController READ activeController NOTIFY activeControllerChanged)
     Q_PROPERTY(QVariantList drones READ drones NOTIFY profilesChanged)
+    Q_PROPERTY(QVariantList previewControllers READ previewControllers NOTIFY changed)
     Q_PROPERTY(QVariantList overlays READ overlays NOTIFY changed)
     Q_PROPERTY(int pathDisplay READ pathDisplay WRITE setPathDisplay NOTIFY changed)
     Q_PROPERTY(bool night READ night WRITE setNight NOTIFY profilesChanged)
@@ -23,6 +24,8 @@ class FleetPlanner : public QObject
     Q_PROPERTY(QVariantList controlPoints READ controlPoints NOTIFY changed)
     Q_PROPERTY(QString error READ error NOTIFY changed)
     Q_PROPERTY(double rapidTransitSpeed READ rapidTransitSpeed WRITE setRapidTransitSpeed NOTIFY changed)
+    Q_PROPERTY(QVariantList fiducialPositions READ fiducialPositions NOTIFY changed)
+    Q_PROPERTY(double fiducialRotation READ fiducialRotation WRITE setFiducialRotation NOTIFY changed)
     Q_PROPERTY(double fiducialRadius READ fiducialRadius WRITE setFiducialRadius NOTIFY changed)
     Q_PROPERTY(double minimum READ minimum NOTIFY changed)
     Q_PROPERTY(double maximum READ maximum NOTIFY changed)
@@ -58,10 +61,14 @@ public:
     void setSelected(int selected);
     PlanMasterController* activeController() const;
     QVariantList drones() const { return _profiles; }
+    QVariantList previewControllers() const;
     QVariantList overlays() const;
     QString error() const { return _error.isEmpty() && enabled() ? validate() : _error; }
     double rapidTransitSpeed() const;
     void setRapidTransitSpeed(double speed);
+    QVariantList fiducialPositions() const;
+    double fiducialRotation() const;
+    void setFiducialRotation(double angle);
     double fiducialRadius() const;
     void setFiducialRadius(double radius);
     double minimum() const { return _minimum; }

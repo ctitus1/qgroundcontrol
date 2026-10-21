@@ -61,6 +61,11 @@ void checkFleetCreationUi(QQmlApplicationEngine* engine, PlanMasterController* m
 }
 void schedulePlannerSmoke(QQmlApplicationEngine* engine, ChimeraPlanner*)
 {
+    if (qEnvironmentVariableIsSet("QGC_PLANNER_LOGIC")) {
+        extern void runPlannerLogic(QQmlApplicationEngine*);
+        QTimer::singleShot(2500, engine, [engine] { runPlannerLogic(engine); });
+        return;
+    }
     if (!qEnvironmentVariableIsSet("QGC_PLANNER_SMOKE")) return;
     SettingsManager::instance()->appSettings()->firstRunPromptIdsShown()->setRawValue("1,2");
     QTimer::singleShot(2500, engine, [engine] {
@@ -148,6 +153,13 @@ void schedulePlannerSmoke(QQmlApplicationEngine* engine, ChimeraPlanner*)
                 }
             }
             check(roiCount == 2 && armCount == 2, "Multiple ROI targets and survey resume");
+            check(commands.last()->command() == MAV_CMD_DO_CHANGE_SPEED && commands.last()->param2() == 5, "Survey exits at rapid transit speed");
+            double legSpeed = 0;
+            for (auto* command : commands) {
+                if (command->command() == MAV_CMD_DO_CHANGE_SPEED) legSpeed = command->param2();
+                if (command->command() == MAV_CMD_DO_SET_ROI_LOCATION) check(legSpeed == 5, "Inspection starts at transit speed");
+                if (command->command() == MAV_CMD_NAV_DELAY && command->param1() == 0) check(legSpeed == 1, "Survey arms at survey speed");
+            }
             auto before = survey->inspections()[0].toMap()["points"].toList()[0].toMap();
             survey->setCoordinate(survey->centerCoordinate().atDistanceAndAzimuth(30, 90));
             auto after = survey->inspections()[0].toMap()["points"].toList()[0].toMap();
@@ -378,7 +390,7 @@ void schedulePlannerSmoke(QQmlApplicationEngine* engine, ChimeraPlanner*)
                 const auto profile=fleet.drones()[drone].toMap();
                 const auto expectedFiducial=origin.atDistanceAndAzimuth(2,profile["heading"].toDouble()+180);
                 check(std::abs(CenterOut::normalizeAngle(profile["trackAngle"].toDouble()-profile["heading"].toDouble())-90)<1e-6,"Default tracks cross the aircraft heading");
-                check(droneFiducial->coordinate().distanceTo(expectedFiducial)<0.01,"Fiducial offset follows the drone heading");
+                check(droneFiducial->coordinate().distanceTo(expectedFiducial)<0.01,"Fiducial offset follows the assigned sector");
                 check(droneFiducial->coordinate().altitude()==30+10*drone,"Fiducial uses the survey altitude layer");
                 for (int phase = 0; phase < 3; ++phase) {
                     auto* region = qobject_cast<ChimeraMissionItem*>(items->get(3 + phase));
@@ -525,31 +537,24 @@ void schedulePlannerSmoke(QQmlApplicationEngine* engine, ChimeraPlanner*)
             for (int i=0;i<exportVisuals->count();++i)
                 qobject_cast<VisualMissionItem*>(exportVisuals->get(i))->appendMissionItems(uploadItems,&exportOwner);
             qobject_cast<MissionSettingsItem*>(exportVisuals->get(0))->addMissionEndAction(uploadItems,uploadItems.size(),&exportOwner);
-            int expectedIndex=1, transitWaypoints=0, surveyEntries=0;
-            double entrySpeed=0;
-            for (int i=0;i<plainItems.size();++i) {
-                const auto item=plainItems[i].toObject();
-                check(item["type"]=="SimpleItem" && !item.contains("complexItemType"),"Standard export uses only simple items");
-                check(item["command"].toInt()!=MAV_CMD_DO_SET_CAM_TRIGG_DIST,"Standard export has no camera trigger commands");
-                if (item["command"].toInt()==MAV_CMD_DO_CHANGE_SPEED) entrySpeed=item["params"].toArray()[1].toDouble();
-                if (item["command"].toInt()==MAV_CMD_NAV_DELAY && item["params"].toArray()[0].toDouble()==0) {
-                    check(entrySpeed==1.7,"Every survey restores mission speed after its rapid transfer");
+            int transitWaypoints = 0, surveyEntries = 0;
+            double entrySpeed = 0;
+            check(plainItems.size() == uploadItems.size() - 1, "Export and upload share the command stream");
+            for (int i = 0; i < plainItems.size(); ++i) {
+                const auto item = plainItems[i].toObject();
+                check(item["type"] == "SimpleItem" && !item.contains("complexItemType"), "Standard export uses only simple items");
+                check(item["command"].toInt() != MAV_CMD_DO_SET_CAM_TRIGG_DIST, "Standard export has no camera trigger commands");
+                if (item["command"].toInt() == MAV_CMD_DO_CHANGE_SPEED) entrySpeed = item["params"].toArray()[1].toDouble();
+                if (item["command"].toInt() == MAV_CMD_NAV_DELAY && item["params"].toArray()[0].toDouble() == 0) {
+                    check(entrySpeed == 1.7, "Every survey restores mission speed after its rapid transfer");
                     ++surveyEntries;
                 }
-                if (item["command"].toInt()==MAV_CMD_NAV_WAYPOINT) {
-                    int settings=i+1;
-                    while (settings<plainItems.size() && plainItems[settings].toObject()["command"].toInt()==MAV_CMD_DO_MOUNT_CONTROL) ++settings;
-                    check(settings<plainItems.size() && plainItems[settings].toObject()["command"].toInt()==MAV_CMD_DO_CHANGE_SPEED,"Waypoint speed follows its camera settings for QGC grouping");
-                    if (entrySpeed==6) ++transitWaypoints;
-                }
-                while (expectedIndex<uploadItems.size() && uploadItems[expectedIndex]->command()==MAV_CMD_DO_CHANGE_SPEED) ++expectedIndex;
-                if (expectedIndex>=uploadItems.size()) continue;
-                QJsonObject expected; uploadItems[expectedIndex]->save(expected);
-                expected=QJsonDocument::fromJson(QJsonDocument(expected).toJson()).object();
-                if (item["command"]==expected["command"] && item["frame"]==expected["frame"] && item["params"]==expected["params"]) ++expectedIndex;
+                if (item["command"].toInt() == MAV_CMD_NAV_WAYPOINT && entrySpeed == 6) ++transitWaypoints;
+                QJsonObject expected; uploadItems[i + 1]->save(expected);
+                expected = QJsonDocument::fromJson(QJsonDocument(expected).toJson()).object();
+                check(item["command"] == expected["command"] && item["frame"] == expected["frame"] && item["params"] == expected["params"], "Export preserves operator speed commands without extra settings");
             }
-            check(expectedIndex==uploadItems.size(),"Plain export preserves original commands and adds transit legs");
-            check(transitWaypoints>=3 && transitWaypoints==surveyEntries,"Every survey entry has a rapid transfer");
+            check(transitWaypoints >= surveyEntries && surveyEntries >= 3, "Every survey entry has a rapid transfer");
             PlanMasterController plainController; plainController.setFlyView(false); plainController.start(true);
             check(plainController.missionController()->load(plainMission,error),error);
             auto* plainVisuals=plainController.missionController()->visualItems();
@@ -560,9 +565,9 @@ void schedulePlannerSmoke(QQmlApplicationEngine* engine, ChimeraPlanner*)
                 if (!waypoint) continue;
                 check(waypoint->missionItem().command()!=MAV_CMD_DO_MOUNT_CONTROL,"Gimbal commands are absorbed into native waypoint sections");
                 if (waypoint->missionItem().command()!=MAV_CMD_NAV_WAYPOINT) continue;
-                check(waypoint->speedSection()->specifyFlightSpeed(),"QGC shows the waypoint flight-speed checkbox checked");
                 if (waypoint->cameraSection()->specifyGimbal()) {
                     ++groupedGimbals;
+                    check(waypoint->speedSection()->specifyFlightSpeed(), "Survey entry groups its speed with gimbal settings");
                     check(std::isfinite(waypoint->missionItem().param4()),"QGC waypoint retains the aircraft heading");
                 }
             }

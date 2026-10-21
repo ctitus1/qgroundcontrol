@@ -275,7 +275,7 @@ VisualMissionItem* MissionController::_insertSimpleMissionItemWorker(QGeoCoordin
     _initVisualItem(newItem);
 
     if (newItem->specifiesAltitude()) {
-        if (!MissionCommandTree::instance()->isLandCommand(command)) {
+        if (!MissionCommandTree::instance()->isLandCommand(command) && command != MAV_CMD_DO_SET_ROI_LOCATION) {
             double                              prevAltitude;
             QGroundControlQmlGlobal::AltitudeFrame    prevAltFrame;
 

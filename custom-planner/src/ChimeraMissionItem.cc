@@ -113,6 +113,7 @@ ChimeraMissionItem::ChimeraMissionItem(PlanMasterController* master, bool flyVie
     _values["pitch"] = -70.;
     _values["entryPoint"] = 0.;
     _values["radius"] = 2.;
+    _values["fiducialRotation"] = 0.;
     _values["transitSpeed"] = 5.;
     auto keys = _values.keys(); keys.append("latitude"); keys.append("longitude");
     for (const auto& key : keys) {
@@ -126,7 +127,7 @@ ChimeraMissionItem::ChimeraMissionItem(PlanMasterController* master, bool flyVie
         if (key == "radius") { metadata->setRawUnits("m"); metadata->setRawMin(0); }
         if (key == "speed" || key == "transitSpeed") { metadata->setRawUnits("m/s"); metadata->setRawMin(0.1); }
         if (key == "delay") { metadata->setRawUnits("s"); metadata->setRawMin(0.1); }
-        if (key == "yaw" || key == "angle") { metadata->setRawUnits("deg"); metadata->setRawMin(0); metadata->setRawMax(359.99); }
+        if (key == "yaw" || key == "angle" || key == "fiducialRotation") { metadata->setRawUnits("deg"); metadata->setRawMin(0); metadata->setRawMax(359.99); }
         if (key == "pitch") { metadata->setRawUnits("deg"); metadata->setRawMin(-90); metadata->setRawMax(-0.01); }
         if (key == "overlap") { metadata->setRawUnits("%"); metadata->setRawMin(0); metadata->setRawMax(94.99); }
         if (key == "latitude") { metadata->setRawMin(-90); metadata->setRawMax(90); }
@@ -285,7 +286,7 @@ void ChimeraMissionItem::setValue(const QString& key, double value)
     }
     if (splitPart() && key != "speed") return;
     if (!_values.contains(key)) return;
-    if ((key == "yaw" || key == "angle") && (value < 0 || value >= 360)) return;
+    if ((key == "yaw" || key == "angle" || key == "fiducialRotation") && (value < 0 || value >= 360)) return;
     if (_values[key] == value) return;
     if (QStringList{"width", "height", "fx", "fy", "cx", "cy"}.contains(key)) _cameraPreset.clear();
     _values[key] = value;
@@ -394,6 +395,7 @@ void ChimeraMissionItem::rebuild()
             parameters.remove("speed");
             parameters.remove("transitSpeed");
             parameters.remove("radius");
+            parameters.remove("fiducialRotation");
             const bool configure = parameters != _generationValues;
             if (configure) _generationValues.clear();
             built = _planner->buildSurvey(_survey, generated, &owner, path, _error, _flightSurvey, configure);
@@ -431,19 +433,18 @@ void ChimeraMissionItem::rebuild()
                 }
             }
             cmd(MAV_CMD_DO_SET_ROI_NONE);
-            if (_resume && !path.isEmpty()) {
-                cmd(MAV_CMD_DO_CHANGE_SPEED, 1, speed, -1);
-                nav(path.first().value<QGeoCoordinate>(), yaw);
-            }
+            cmd(MAV_CMD_DO_CHANGE_SPEED, 1, _values["transitSpeed"].toDouble(), -1);
+            if (!generated.isEmpty()) _commands.append(new MissionItem(*generated.first(), this));
             restore();
             int checkpoint = -1;
             for (auto* item : generated) {
-                _commands.append(new MissionItem(*item, this));
+                if (item != generated.first()) _commands.append(new MissionItem(*item, this));
                 if (item->command() != MAV_CMD_NAV_WAYPOINT) continue;
                 ++checkpoint;
                 for (const auto& value : _inspections) {
                     const auto b = value.toMap();
                     if (b["checkpoint"].toInt() != checkpoint) continue;
+                    cmd(MAV_CMD_DO_CHANGE_SPEED, 1, _values["transitSpeed"].toDouble(), -1);
                     for (const auto& inspectionPoint : b["points"].toList()) {
                         const auto p = inspectionPoint.toMap(); nav(coordinateOf(p), p["yaw"].toDouble(), p["roi"].toBool());
                     }
@@ -451,15 +452,15 @@ void ChimeraMissionItem::rebuild()
                     const QGeoCoordinate resume(item->param5(), item->param6(), item->param7());
                     nav(resume, yaw);
                     restore();
-                    nav(resume, yaw);
                 }
             }
+            cmd(MAV_CMD_DO_CHANGE_SPEED, 1, _values["transitSpeed"].toDouble(), -1);
         }
     } else if (_error.isEmpty()) {
         _position.setAltitude(altitude);
         if (!_position.isValid() || _values["delay"].toDouble() <= 0) _error = tr("Set a valid position and a positive loiter time.");
         if (_kind == "vantage") cmd(MAV_CMD_NAV_DELAY, 1);
-        cmd(MAV_CMD_DO_CHANGE_SPEED, 1, _kind == "vantage" ? _values["transitSpeed"].toDouble() : speed, -1);
+        cmd(MAV_CMD_DO_CHANGE_SPEED, 1, _values["transitSpeed"].toDouble(), -1);
         auto* hold = nav(_position, yaw);
         hold->setCommand(MAV_CMD_NAV_LOITER_TIME);
         hold->setParam1(_values["delay"].toDouble());
@@ -530,6 +531,7 @@ bool ChimeraMissionItem::load(const QJsonObject& json, int sequence, QString& er
             if (!values.contains(it.key())) {
                 if (it.key() == "entryPoint") { it.value() = 0.; continue; }
                 if (it.key() == "radius") { it.value() = 2.; continue; }
+                if (it.key() == "fiducialRotation") { it.value() = 0.; continue; }
                 if (it.key() == "transitSpeed") { it.value() = 5.; continue; }
             }
             if (!values.contains(it.key()) || !std::isfinite(values[it.key()].toDouble())) {

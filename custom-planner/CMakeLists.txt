@@ -4,6 +4,7 @@ set(planner_qml_files
     ${CMAKE_CURRENT_SOURCE_DIR}/src/BlockEditor.qml
     ${CMAKE_CURRENT_SOURCE_DIR}/src/BlockMap.qml
     ${CMAKE_CURRENT_SOURCE_DIR}/src/FleetBar.qml
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/SpeedOverlay.qml
     ${CMAKE_CURRENT_SOURCE_DIR}/src/FleetOverlay.qml
     ${CMAKE_CURRENT_SOURCE_DIR}/src/FleetSettings.qml
     ${CMAKE_CURRENT_SOURCE_DIR}/src/FleetSetup.qml
@@ -40,5 +41,5 @@ if(QGC_PLANNER_SMOKE_TEST)
     set_source_files_properties(${CMAKE_CURRENT_SOURCE_DIR}/src/CustomPlugin.cc
         DIRECTORY ${CMAKE_SOURCE_DIR}
         PROPERTIES COMPILE_DEFINITIONS QGC_PLANNER_SMOKE_TEST)
-    set(CUSTOM_SOURCES ${CUSTOM_SOURCES} ${CMAKE_CURRENT_SOURCE_DIR}/tests/PlannerSmoke.cc CACHE INTERNAL "" FORCE)
+    set(CUSTOM_SOURCES ${CUSTOM_SOURCES} ${CMAKE_CURRENT_SOURCE_DIR}/tests/PlannerSmoke.cc ${CMAKE_CURRENT_SOURCE_DIR}/tests/PlannerLogic.cc CACHE INTERNAL "" FORCE)
 endif()

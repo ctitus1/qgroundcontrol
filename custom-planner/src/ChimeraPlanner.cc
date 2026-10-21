@@ -6,6 +6,8 @@
 #include "Vehicle.h"
 #include "MissionController.h"
 #include "MissionItem.h"
+#include "MissionCommandTree.h"
+#include "MissionCommandUIInfo.h"
 #include "MissionSettingsItem.h"
 #include "PlanMasterController.h"
 #include "QGCMapPolygon.h"
@@ -36,48 +38,6 @@ MissionItem* command(QObject* owner, MAV_CMD cmd, double p1 = 0, double p2 = 0, 
         true, false, owner);
 }
 
-bool nativeSpeed(const MissionItem* item)
-{
-    return item->command() == MAV_CMD_DO_CHANGE_SPEED && item->param3() == -1 &&
-        item->param4() == 0 && item->param5() == 0 && item->param6() == 0 && item->param7() == 0;
-}
-
-QList<MissionItem*> waypointSections(const QList<MissionItem*>& compiled, QObject* owner, double defaultSpeed, int speedType)
-{
-    QList<MissionItem*> items;
-    double speed = defaultSpeed;
-    bool explicitSpeed = false;
-    for (auto* item : compiled) {
-        if (item->command() == MAV_CMD_DO_SET_CAM_TRIGG_DIST) continue;
-        if (nativeSpeed(item) && item->param1() == speedType && item->param2() > 0) {
-            if (explicitSpeed && speed == item->param2()) continue;
-            speed = item->param2(); explicitSpeed = true;
-        } else if (item->command() == MAV_CMD_DO_CHANGE_SPEED) explicitSpeed = false;
-        items.append(item);
-    }
-    for (int i = 1; i + 1 < items.size(); ++i) {
-        if (items[i-1]->command() == MAV_CMD_NAV_WAYPOINT && items[i]->command() == MAV_CMD_DO_SET_ROI_NONE && nativeSpeed(items[i+1]))
-            std::swap(items[i], items[i+1]);
-        if (nativeSpeed(items[i]) && items[i+1]->command() == MAV_CMD_DO_MOUNT_CONTROL)
-            std::swap(items[i], items[i+1]);
-    }
-    speed = defaultSpeed;
-    for (int i = 1; i < items.size(); ++i) {
-        if (items[i]->command() == MAV_CMD_DO_CHANGE_SPEED)
-            speed = items[i]->param2() > 0 ? items[i]->param2() : defaultSpeed;
-        if (items[i]->command() != MAV_CMD_NAV_WAYPOINT) continue;
-        int end = i + 1;
-        bool hasSpeed = false;
-        while (end < items.size() && (items[end]->command() == MAV_CMD_DO_MOUNT_CONTROL ||
-               items[end]->command() == MAV_CMD_SET_CAMERA_MODE || nativeSpeed(items[end]))) {
-            hasSpeed |= nativeSpeed(items[end]);
-            ++end;
-        }
-        if (!hasSpeed) items.insert(end, command(owner, MAV_CMD_DO_CHANGE_SPEED, speedType, speed, -1));
-    }
-    return items;
-}
-
 QJsonObject serialize(MissionItem* item, int sequence)
 {
     item->setSequenceNumber(sequence);
@@ -99,7 +59,7 @@ QJsonObject serialize(MissionItem* item, int sequence)
 QVariantMap ChimeraPlanner::settings(QObject* item) const
 {
     QVariantMap values{{"enabled", false}, {"yaw", 0.0}, {"pitch", -70.0}, {"overlap", 25.0},
-        {"width", 1920.0}, {"height", 1080.0}, {"fx", 1200.0}, {"fy", 1200.0},
+        {"speed", 1.0}, {"transitSpeed", 5.0}, {"width", 1920.0}, {"height", 1080.0}, {"fx", 1200.0}, {"fy", 1200.0},
         {"cx", 960.0}, {"cy", 540.0}};
     if (item) {
         const auto saved = item->property(settingsKey).toMap();
@@ -246,6 +206,81 @@ QVariantMap ChimeraPlanner::preview(SurveyComplexItem* survey, const QVariantLis
             {"offset", std::hypot(shape.center.x(), shape.center.y())}, {"error", ""}};
 }
 
+QString ChimeraPlanner::compileMission(PlanMasterController* controller, QList<MissionItem*>& compiled, QObject* owner)
+{
+    auto* visualItems = controller->missionController()->visualItems();
+    for (int i = 0; i < visualItems->count(); ++i) {
+        auto* visual = qobject_cast<VisualMissionItem*>(visualItems->get(i));
+        if (auto* block = qobject_cast<ChimeraMissionItem*>(visual)) {
+            if (!block->error().isEmpty()) return block->error();
+            const auto error = block->linkedSurveyError();
+            if (!error.isEmpty()) return error;
+        }
+        auto* candidate = qobject_cast<SurveyComplexItem*>(visual);
+        if (candidate && settings(candidate)["enabled"].toBool()) {
+            QList<MissionItem*> generated;
+            QVariantList points;
+            QString error;
+            if (!buildSurvey(candidate, generated, owner, points, error)) return error;
+            compiled.append(command(owner, MAV_CMD_DO_SET_ROI_NONE));
+            compiled.append(command(owner, MAV_CMD_DO_CHANGE_SPEED, 1, settings(candidate)["transitSpeed"].toDouble(), -1));
+            compiled.append(generated.takeFirst());
+            compiled.append(command(owner, MAV_CMD_DO_CHANGE_SPEED, 1, settings(candidate)["speed"].toDouble(), -1));
+            compiled.append(command(owner, MAV_CMD_DO_MOUNT_CONTROL, settings(candidate)["pitch"].toDouble()));
+            compiled.append(command(owner, MAV_CMD_NAV_DELAY, 0));
+            compiled.append(generated);
+            compiled.append(command(owner, MAV_CMD_DO_CHANGE_SPEED, 1, settings(candidate)["transitSpeed"].toDouble(), -1));
+        } else {
+            if (visual->readyForSaveState() != VisualMissionItem::ReadyForSave) {
+                return tr("Complete all mission items before export.");
+            }
+            visual->appendMissionItems(compiled, owner);
+        }
+    }
+    if (auto* home = qobject_cast<MissionSettingsItem*>(visualItems->get(0)))
+        home->addMissionEndAction(compiled, compiled.size(), owner);
+    return {};
+}
+
+QVariantList ChimeraPlanner::speedSegments(QObject* object)
+{
+    auto* controller = qobject_cast<PlanMasterController*>(object);
+    if (!controller) return {};
+    QObject owner;
+    QList<MissionItem*> commands;
+    if (!compileMission(controller, commands, &owner).isEmpty()) return {};
+    auto* vehicle = controller->controllerVehicle();
+    if (!vehicle) return {};
+    double speed = qQNaN();
+    QGeoCoordinate previous;
+    QVariantList segments;
+    for (auto* item : commands) {
+        if (item->command() == MAV_CMD_DO_CHANGE_SPEED) {
+            speed = item->param2() > 1.1920928955078125e-7 ? item->param2() : qQNaN();
+            continue;
+        }
+        if (item->command() == MAV_CMD_DO_VTOL_TRANSITION) { speed = qQNaN(); continue; }
+        const auto* info = MissionCommandTree::instance()->getUIInfo(vehicle, QGCMAVLink::VehicleClassGeneric, item->command());
+        if (item->command() != MAV_CMD_NAV_RETURN_TO_LAUNCH && (!info || !info->specifiesCoordinate() || info->isStandaloneCoordinate())) continue;
+        const auto coordinate = item->command() == MAV_CMD_NAV_RETURN_TO_LAUNCH ? controller->missionController()->plannedHomePosition() : item->coordinate();
+        if (!coordinate.isValid()) continue;
+        if (previous.isValid() && previous.distanceTo(coordinate) > 0.01) {
+            if (!segments.isEmpty() && segments.last().toMap()["speed"].toDouble() == speed) {
+                auto segment = segments.last().toMap();
+                auto path = segment["path"].toList();
+                path.append(QVariant::fromValue(coordinate));
+                segment["path"] = path;
+                segments.last() = segment;
+            } else {
+                segments.append(QVariantMap{{"path", QVariantList{QVariant::fromValue(previous), QVariant::fromValue(coordinate)}},
+                    {"speed", speed}, {"color", std::isfinite(speed) && speed > 0 && speed <= 3 ? "#27ae60" : "#eb5757"}});
+            }
+        }
+        previous = coordinate;
+    }
+    return segments;
+}
+
 QString ChimeraPlanner::exportPlan(QObject* item, const QString& filename)
 {
     auto* controller = qobject_cast<PlanMasterController*>(item);
@@ -258,63 +293,11 @@ QString ChimeraPlanner::exportPlan(QObject* item, const QString& filename)
     }
     QObject owner;
     QList<MissionItem*> compiled;
-    auto* visualItems = controller->missionController()->visualItems();
-    for (int i = 0; i < visualItems->count(); ++i) {
-        const int firstCommand = compiled.size();
-        auto* visual = qobject_cast<VisualMissionItem*>(visualItems->get(i));
-        if (auto* block = qobject_cast<ChimeraMissionItem*>(visual)) {
-            if (!block->error().isEmpty()) return block->error();
-            const auto error = block->linkedSurveyError();
-            if (!error.isEmpty()) return error;
-        }
-        auto* candidate = qobject_cast<SurveyComplexItem*>(visual);
-        if (candidate && settings(candidate)["enabled"].toBool()) {
-            QList<MissionItem*> generated;
-            QVariantList points;
-            QString error;
-            if (!buildSurvey(candidate, generated, &owner, points, error)) return error;
-            compiled.append(command(&owner, MAV_CMD_DO_SET_ROI_NONE));
-            compiled.append(command(&owner, MAV_CMD_DO_CHANGE_SPEED, 1, settings(candidate)["speed"].toDouble(), -1));
-            compiled.append(command(&owner, MAV_CMD_DO_MOUNT_CONTROL, settings(candidate)["pitch"].toDouble()));
-            compiled.append(command(&owner, MAV_CMD_NAV_DELAY, 0));
-            compiled.append(generated);
-        } else {
-            if (visual->readyForSaveState() != VisualMissionItem::ReadyForSave) {
-                return tr("Complete all mission items before export.");
-            }
-            visual->appendMissionItems(compiled, &owner);
-        }
-        auto* block = qobject_cast<ChimeraMissionItem*>(visual);
-        if (block && block->isSurveyItem()) {
-            int firstWaypoint = -1, firstArm = -1, firstSpeed = -1;
-            for (int j = firstCommand; j < compiled.size(); ++j) {
-                const auto command = compiled[j]->command();
-                if (firstWaypoint < 0 && command == MAV_CMD_NAV_WAYPOINT) firstWaypoint = j;
-                if (firstArm < 0 && command == MAV_CMD_NAV_DELAY && compiled[j]->param1() == 0) firstArm = j;
-                if (firstSpeed < 0 && command == MAV_CMD_DO_CHANGE_SPEED) firstSpeed = j;
-            }
-            const double transitSpeed = block->values()["transitSpeed"].toDouble();
-            if (firstWaypoint >= 0 && firstArm > firstWaypoint && firstSpeed >= firstCommand && firstSpeed < firstWaypoint) {
-                compiled[firstSpeed]->setParam2(transitSpeed);
-            } else if (firstWaypoint >= 0) {
-                auto* entry = new MissionItem(*compiled[firstWaypoint], &owner);
-                const int insertion = firstSpeed >= 0 && firstArm >= 0 ? std::min(firstSpeed, firstArm) : firstCommand;
-                compiled.insert(insertion, command(&owner, MAV_CMD_DO_CHANGE_SPEED, 1, transitSpeed, -1));
-                compiled.insert(insertion + 1, entry);
-                if (firstArm >= 0 && firstArm < firstSpeed)
-                    compiled.insert(insertion + 2, command(&owner, MAV_CMD_DO_CHANGE_SPEED, 1, block->values()["speed"].toDouble(), -1));
-            }
-        }
-    }
-    if (auto* home = qobject_cast<MissionSettingsItem*>(visualItems->get(0))) {
-        home->addMissionEndAction(compiled, compiled.size(), &owner);
-    }
-    const auto* vehicle = controller->controllerVehicle();
-    const double defaultSpeed = vehicle->multiRotor() || vehicle->vtol() ? vehicle->defaultHoverSpeed() : vehicle->defaultCruiseSpeed();
-    const auto grouped = waypointSections(compiled, &owner, defaultSpeed, vehicle->multiRotor() ? 1 : 0);
+    const auto error = compileMission(controller, compiled, &owner);
+    if (!error.isEmpty()) return error;
     QJsonArray items;
-    for (int i = 1; i < grouped.size(); ++i) {
-        auto* missionItem = grouped[i];
+    for (int i = 1; i < compiled.size(); ++i) {
+        auto* missionItem = compiled[i];
         if (missionItem->command() == MAV_CMD_DO_JUMP || missionItem->command() == MAV_CMD_DO_JUMP_TAG)
             return tr("Remove mission jumps before export. Expansion changes their target sequences.");
         items.append(serialize(missionItem, i));

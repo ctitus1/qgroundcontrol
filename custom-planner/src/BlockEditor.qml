@@ -53,6 +53,18 @@ Rectangle {
             QGCLabel { text: qsTr("Drone offset radius"); Layout.fillWidth: true; Layout.minimumWidth: 0; wrapMode: Text.WordWrap }
             FactTextField { fact: root.block.fact("radius"); Layout.preferredWidth: root.fieldWidth; Layout.minimumWidth: root.fieldWidth; Layout.maximumWidth: root.fieldWidth }
         }
+        ColumnLayout {
+            visible: root.block.kind === "fiducial" && root.block.fleetRegion === -1
+            Layout.fillWidth: true
+            QGCLabel { text: qsTr("Drone position rotation"); Layout.fillWidth: true }
+            FactTextField { fact: root.block.fact("fiducialRotation"); Layout.preferredWidth: root.fieldWidth }
+            QGCSlider {
+                Layout.fillWidth: true
+                from: 0; to: 359; stepSize: 1
+                value: root.block.values.fiducialRotation
+                onMoved: root.block.setValue("fiducialRotation", value)
+            }
+        }
         SectionHeader { id: flightHeader; text: root.fleetMasterSource ? qsTr("Search area") : qsTr("Flight"); Layout.fillWidth: true }
         ColumnLayout {
             visible: flightHeader.checked
@@ -65,7 +77,7 @@ Rectangle {
                     ["yaw", "Heading"], ["angle", "Track angle"]
                 ] : [["latitude", "Latitude"], ["longitude", "Longitude"], ["altitude", "Altitude"],
                      ["yaw", "Heading"], ["delay", "Loiter time"],
-                     root.block.kind === "vantage" ? ["transitSpeed", "Rapid transit speed"] : ["speed", "Speed"]]
+                     ["transitSpeed", "Rapid transit speed"]]
                 delegate: RowLayout {
                     required property var modelData
                     visible: !root.fleetMasterSource || modelData[0] !== "altitude"

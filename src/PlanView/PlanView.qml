@@ -256,6 +256,24 @@ Item {
         onLoaded: item.map = editorMap
     }
 
+    QGCCheckBox {
+        id: speedOverlayToggle
+        objectName: "speedOverlayToggle"
+        anchors.top: fleetBar.active ? fleetBar.bottom : planToolBar.bottom
+        anchors.horizontalCenter: parent.horizontalCenter
+        text: qsTr("Speed overlay: green ≤3 m/s, red >3 m/s or unset")
+        visible: typeof chimeraPlanner !== "undefined"
+    }
+    Loader {
+        active: speedOverlayToggle.checked
+        source: "qrc:/qml/Chimera/Planner/SpeedOverlay.qml"
+        onLoaded: {
+            item.planner = chimeraPlanner
+            item.map = editorMap
+            item.controllers = Qt.binding(() => _fleet && _fleet.enabled ? _fleet.previewControllers : [_planMasterController])
+        }
+    }
+
     PlanViewToolBar {
         id: planToolBar
         planMasterController: _planMasterController

@@ -89,6 +89,18 @@ ColumnLayout {
                     onEditingFinished: chimeraFleet.fiducialRadius = Number(text)
                 }
             }
+            QGCLabel { text: qsTr("Fiducial position rotation"); Layout.fillWidth: true }
+            QGCSlider {
+                Layout.fillWidth: true
+                from: 0; to: 359; stepSize: 1
+                value: chimeraFleet.fiducialRotation
+                onMoved: chimeraFleet.fiducialRotation = value
+            }
+            QGCLabel {
+                text: qsTr("%1° — aircraft headings stay with their surveys").arg(chimeraFleet.fiducialRotation.toFixed(0))
+                Layout.fillWidth: true
+                wrapMode: Text.WordWrap
+            }
             RowLayout {
                 QGCLabel {
                     text: qsTr("Rapid transit speed (m/s)")

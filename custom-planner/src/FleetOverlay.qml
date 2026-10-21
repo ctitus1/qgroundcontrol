@@ -14,6 +14,7 @@ Item {
     property var fills: []
     property var handles: []
     property var draggers: []
+    property var fiducials: []
     property bool dragging: false
     function refreshControls() {
         const points = chimeraFleet.selected === 0 ? chimeraFleet.controlPoints : []
@@ -58,6 +59,18 @@ Item {
             lines[i].opacity = chimeraFleet.selected === 0 ? 0.9 : 0.3
             lines[i].visible = paths[i].drone === 0 || (chimeraFleet.pathDisplay !== 2 && (chimeraFleet.selected !== paths[i].drone || chimeraFleet.pathDisplay === 1))
         }
+        const positions = chimeraFleet.fiducialPositions
+        while (fiducials.length > positions.length) { const item = fiducials.pop(); map.removeMapItem(item); item.destroy() }
+        for (var n = 0; n < positions.length; ++n) {
+            if (n >= fiducials.length) {
+                const item = fiducialMarker.createObject(map); map.addMapItem(item); fiducials.push(item)
+            }
+            fiducials[n].coordinate = positions[n].coordinate
+            fiducials[n].heading = positions[n].heading
+            fiducials[n].title = positions[n].name
+            fiducials[n].tint = positions[n].color
+            fiducials[n].drone = positions[n].drone
+        }
         refreshControls()
     }
     onMapChanged: refresh()
@@ -80,7 +93,7 @@ Item {
     }
     Timer { id: refreshTimer; interval: 50; onTriggered: root.refresh() }
     Component.onDestruction: {
-        if (map) for (const item of lines.concat(markers, fills, handles)) { map.removeMapItem(item); item.destroy() }
+        if (map) for (const item of lines.concat(markers, fills, handles, fiducials)) { map.removeMapItem(item); item.destroy() }
         for (const item of draggers) item.destroy()
     }
     Component {
@@ -128,6 +141,38 @@ Item {
             anchorPoint.y: sourceItem.anchorPointY
             z: 6
             sourceItem: MissionItemIndexLabel { label: indicator.drone === 0 ? "" : indicator.title; index: indicator.drone === 0 ? parseInt(indicator.title.substring(1)) : -1; small: false; color: indicator.tint; onClicked: chimeraFleet.selected = indicator.drone }
+        }
+    }
+    Component {
+        id: fiducialMarker
+        MapQuickItem {
+            id: position
+            property real heading: 0
+            property string title
+            property color tint
+            property int drone
+            z: QGroundControl.zOrderMapItems + 3
+            anchorPoint.x: sourceItem.width / 2
+            anchorPoint.y: ScreenTools.defaultFontPixelHeight / 2
+            sourceItem: Column {
+                spacing: 2
+                Text {
+                    text: "▲"
+                    anchors.horizontalCenter: parent.horizontalCenter
+                    color: position.tint
+                    style: Text.Outline
+                    styleColor: "black"
+                    font.pixelSize: ScreenTools.defaultFontPixelHeight
+                    rotation: position.heading - root.map.bearing
+                }
+                MissionItemIndexLabel {
+                    label: position.title
+                    index: -1
+                    small: true
+                    color: position.tint
+                    onClicked: chimeraFleet.selected = position.drone
+                }
+            }
         }
     }
     Component { id: line; MapPolyline { property var moving: []; property bool region: false; z: 5 } }
