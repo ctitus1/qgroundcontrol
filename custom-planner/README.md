@@ -56,6 +56,17 @@ cmake --build build -j 12
 
 The executable is `build/Release/QGroundControl`. It uses the standard QGC application name, settings, and default directories.
 
+The taskbar launcher runs the `px4simstack/qgc:chimera-5.1.4` Docker image.
+To update that planner, run this command from the sibling `px4-sim-stack` checkout:
+
+```sh
+./px4sim build qgc
+```
+
+This builds the source, exports the runtime to `build/runtime`, and rebuilds the Docker image.
+Save your plan, close QGC, and open it again from the taskbar after the build succeeds.
+An open QGC process continues to use its previous executable until it exits.
+
 The planner uses a registered `Chimera.Planner` QML module, as in QGC's custom-build example. Its lint settings reject missing imports and types. The fleet overlay imports QGC's waypoint-label controls. Existing map pools, partition handles, path display modes, and split controls remain.
 
 Build the production executable with `cmake --build build`. Run the module check with `cmake --build build --target ChimeraPlannerModule_qmllint`. Camera projection, inward headings, shared-center track order, alternating directions, and entry reversal have focused geometry checks. Function checks remain for the user.
