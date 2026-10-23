@@ -45,7 +45,7 @@ Rectangle {
             font.pointSize: ScreenTools.smallFontPointSize
             wrapMode: Text.WordWrap
             text: root.fleetMasterSource ? qsTr("Edit the shared area, fleet setup, and flight defaults here. Master heading and track angle adjust the drones independently.") : root.block.kind === "survey" ? (root.block.linkedSurvey ? qsTr("Edits apply to the whole linked survey.") : qsTr("The polygon defines the ground area to cover.")) :
-                  root.block.kind === "vantage" ? qsTr("Delay until 1 s arms vantage autonomy. 5g_drone controls the gimbal.") : qsTr("5g_drone controls the gimbal during the timed loiter.")
+                  root.block.kind === "vantage" ? qsTr("Delay until 1 s arms vantage autonomy. 5g_drone controls the gimbal.") : qsTr("5g_drone controls the gimbal during the indefinite loiter.")
         }
         RowLayout {
             visible: root.block.kind === "fiducial" && root.block.fleetRegion === -1
@@ -80,7 +80,8 @@ Rectangle {
                      ["transitSpeed", "Rapid transit speed"]]
                 delegate: RowLayout {
                     required property var modelData
-                    visible: !root.fleetMasterSource || modelData[0] !== "altitude"
+                    visible: (!root.fleetMasterSource || modelData[0] !== "altitude") &&
+                             (root.block.kind !== "fiducial" || modelData[0] !== "delay")
                     Layout.fillWidth: true
                     spacing: root.margin / 2
                     QGCLabel { text: ["yaw", "angle"].indexOf(modelData[0]) >= 0 ? root.angleLabel(modelData[0]) : modelData[1]; Layout.fillWidth: true; Layout.minimumWidth: 0; wrapMode: Text.Wrap }
@@ -213,7 +214,7 @@ Rectangle {
         QGCLabel {
             visible: root.block.fleetRegion !== -1
             Layout.fillWidth: true; wrapMode: Text.WordWrap
-            text: root.block.fleetRegion === -2 ? qsTr("Shared fiducial: edit its position and loiter time in Master view.") :
+            text: root.block.fleetRegion === -2 ? qsTr("Shared fiducial: edit its position in Master view.") :
                 qsTr("Region %1. Heading and altitude edits apply to this drone. Camera and flight settings can be adjusted for this region.").arg(root.block.fleetRegion + 1)
         }
         SectionHeader { id: splitHeader; text: qsTr("Split points"); visible: root.block.kind === "survey" && !(chimeraFleet.enabled && chimeraFleet.selected === 0 && root.block.fleetRegion === -1); Layout.fillWidth: true }

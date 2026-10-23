@@ -125,8 +125,9 @@ void schedulePlannerSmoke(QQmlApplicationEngine* engine, ChimeraPlanner*)
             QObject owner;
             QList<MissionItem*> commands;
             fiducial->appendMissionItems(commands, &owner);
-            check(commands.size() == 2 && commands.last()->command() == MAV_CMD_NAV_LOITER_TIME &&
-                  commands.last()->param1() == 45 && commands.last()->param4() == 23, "Fiducial timed loiter and heading");
+            check(commands.size() == 2 && commands.last()->command() == MAV_CMD_NAV_LOITER_UNLIM &&
+                  commands.last()->param1() == 0 && commands.last()->param4() == 23, "Fiducial indefinite loiter and heading");
+            check(fiducial->additionalTimeDelay() == 0, "Fiducial has no timed delay");
             for (auto* command : commands) check(command->command() != MAV_CMD_DO_MOUNT_CONTROL && command->command() != MAV_CMD_DO_SET_ROI_NONE, "No fiducial gimbal command");
             for (auto* command : commands) check(command->command() != MAV_CMD_NAV_WAYPOINT && command->command() != MAV_CMD_NAV_DELAY, "No fiducial entry waypoint or delay");
             commands.clear(); survey->appendMissionItems(commands, &owner);

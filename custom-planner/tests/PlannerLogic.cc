@@ -112,7 +112,7 @@ void runPlannerLogic(QQmlApplicationEngine* engine)
         QObject owner;
         QList<MissionItem*> hold;
         fiducial->appendMissionItems(hold, &owner);
-        require(hold.first()->param2() == 5 && hold.last()->command() == MAV_CMD_NAV_LOITER_TIME, "Fiducial rapid transit and loiter");
+        require(hold.first()->param2() == 5 && hold.last()->command() == MAV_CMD_NAV_LOITER_UNLIM && hold.last()->param1() == 0, "Fiducial rapid transit and indefinite loiter");
         hold.clear(); vantage->appendMissionItems(hold, &owner);
         require(hold.size() == 3 && hold[1]->param2() == 5 && hold.last()->command() == MAV_CMD_NAV_LOITER_TIME, "Vantage rapid transit and loiter");
         ChimeraPlanner planner;
@@ -268,6 +268,11 @@ void runPlannerLogic(QQmlApplicationEngine* engine)
         require(fiducial->load(saved, 2, error) && fiducial->values()["fiducialRotation"].toDouble() == 45, "Save and restore fiducial rotation");
         auto values = saved["values"].toObject(); values.remove("fiducialRotation"); saved["values"] = values;
         require(fiducial->load(saved, 2, error) && fiducial->values()["fiducialRotation"].toDouble() == 0, "Older plans keep their default fiducial rotation");
+        auto oldValues = saved["values"].toObject(); oldValues["delay"] = 45.; saved["values"] = oldValues;
+        require(fiducial->load(saved, 2, error), "Load a saved timed fiducial block");
+        hold.clear(); fiducial->appendMissionItems(hold, &owner);
+        require(hold.last()->command() == MAV_CMD_NAV_LOITER_UNLIM && hold.last()->param1() == 0 &&
+                fiducial->additionalTimeDelay() == 0, "Saved fiducial durations do not affect indefinite loiters");
         require(fleet.setCount(2).isEmpty() && fleet.setCount(3).isEmpty(), "Resize fleet after fiducial rotation");
         fleet.synchronize();
         require(fleet.fiducialPositions().size() == 3 && fleet.fiducialRotation() == 45 && fleet.validate().isEmpty(), "Fleet changes retain rotation and valid altitude layers");

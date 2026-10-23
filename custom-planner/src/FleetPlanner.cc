@@ -571,7 +571,6 @@ void FleetPlanner::synchronize()
         for (auto* block : droneBlocks) {
             if (block->fleetRegion()==-2) {
                 block->setCoordinate(fiducial()->coordinate().atDistanceAndAzimuth(fiducialRadius(),inward+180+fiducialRotation()));
-                block->setValue("delay",fiducial()->values()["delay"].toDouble());
                 block->setValue("transitSpeed",rapidTransitSpeed());
             } else if (block->fleetRegion()>=0 && block->fleetRegion()<polygons.size()) {
                 block->setSearchCenter(searchCenter);

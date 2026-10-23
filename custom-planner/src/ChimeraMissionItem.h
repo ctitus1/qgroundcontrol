@@ -102,7 +102,7 @@ public:
     QString mapVisualQML() const override { return "qrc:/qml/Chimera/Planner/BlockMap.qml"; }
     void appendMissionItems(QList<MissionItem*>& items, QObject* parent) override;
     void applyNewAltitude(double altitude) override { setValue("altitude", altitude); }
-    double additionalTimeDelay() const override { return _kind == "survey" ? 0 : _values.value("delay").toDouble(); }
+    double additionalTimeDelay() const override { return _kind == "vantage" ? _values.value("delay").toDouble() : 0; }
 signals:
     void changed();
     void translated(double distance, double azimuth);
