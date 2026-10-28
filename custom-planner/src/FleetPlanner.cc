@@ -277,7 +277,7 @@ void FleetPlanner::setFiducialRotation(double angle)
 }
 double FleetPlanner::fiducialRadius() const
 {
-    return fiducial() ? fiducial()->values()["radius"].toDouble() : 2.;
+    return fiducial() ? fiducial()->values()["radius"].toDouble() : 1.;
 }
 void FleetPlanner::setFiducialRadius(double radius)
 {

@@ -112,7 +112,7 @@ ChimeraMissionItem::ChimeraMissionItem(PlanMasterController* master, bool flyVie
     _values["angle"] = 90.;
     _values["pitch"] = -70.;
     _values["entryPoint"] = 0.;
-    _values["radius"] = 2.;
+    _values["radius"] = 1.;
     _values["fiducialRotation"] = 0.;
     _values["transitSpeed"] = 5.;
     auto keys = _values.keys(); keys.append("latitude"); keys.append("longitude");
@@ -532,7 +532,7 @@ bool ChimeraMissionItem::load(const QJsonObject& json, int sequence, QString& er
         for (auto it = _values.begin(); it != _values.end(); ++it) {
             if (!values.contains(it.key())) {
                 if (it.key() == "entryPoint") { it.value() = 0.; continue; }
-                if (it.key() == "radius") { it.value() = 2.; continue; }
+                if (it.key() == "radius") { it.value() = 1.; continue; }
                 if (it.key() == "fiducialRotation") { it.value() = 0.; continue; }
                 if (it.key() == "transitSpeed") { it.value() = 5.; continue; }
             }
