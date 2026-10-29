@@ -27,6 +27,7 @@ class FleetPlanner : public QObject
     Q_PROPERTY(QVariantList fiducialPositions READ fiducialPositions NOTIFY changed)
     Q_PROPERTY(double fiducialRotation READ fiducialRotation WRITE setFiducialRotation NOTIFY changed)
     Q_PROPERTY(double fiducialRadius READ fiducialRadius WRITE setFiducialRadius NOTIFY changed)
+    Q_PROPERTY(double fiducialHeading READ fiducialHeading WRITE setFiducialHeading NOTIFY changed)
     Q_PROPERTY(double minimum READ minimum NOTIFY changed)
     Q_PROPERTY(double maximum READ maximum NOTIFY changed)
     Q_PROPERTY(double maximumGap READ maximumGap NOTIFY changed)
@@ -71,6 +72,8 @@ public:
     void setFiducialRotation(double angle);
     double fiducialRadius() const;
     void setFiducialRadius(double radius);
+    double fiducialHeading() const;
+    void setFiducialHeading(double heading);
     double minimum() const { return _minimum; }
     double maximum() const { return _maximum; }
     double maximumGap() const { return _maximumGap; }

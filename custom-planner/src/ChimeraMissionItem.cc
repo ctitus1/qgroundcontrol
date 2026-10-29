@@ -114,6 +114,7 @@ ChimeraMissionItem::ChimeraMissionItem(PlanMasterController* master, bool flyVie
     _values["entryPoint"] = 0.;
     _values["radius"] = 1.;
     _values["fiducialRotation"] = 0.;
+    _values["fiducialHeading"] = 90.;
     _values["transitSpeed"] = 5.;
     auto keys = _values.keys(); keys.append("latitude"); keys.append("longitude");
     for (const auto& key : keys) {
@@ -127,7 +128,7 @@ ChimeraMissionItem::ChimeraMissionItem(PlanMasterController* master, bool flyVie
         if (key == "radius") { metadata->setRawUnits("m"); metadata->setRawMin(0); }
         if (key == "speed" || key == "transitSpeed") { metadata->setRawUnits("m/s"); metadata->setRawMin(0.1); }
         if (key == "delay") { metadata->setRawUnits("s"); metadata->setRawMin(0.1); }
-        if (key == "yaw" || key == "angle" || key == "fiducialRotation") { metadata->setRawUnits("deg"); metadata->setRawMin(0); metadata->setRawMax(359.99); }
+        if (key == "yaw" || key == "angle" || key == "fiducialRotation" || key == "fiducialHeading") { metadata->setRawUnits("deg"); metadata->setRawMin(0); metadata->setRawMax(359.99); }
         if (key == "pitch") { metadata->setRawUnits("deg"); metadata->setRawMin(-90); metadata->setRawMax(-0.01); }
         if (key == "overlap") { metadata->setRawUnits("%"); metadata->setRawMin(0); metadata->setRawMax(94.99); }
         if (key == "latitude") { metadata->setRawMin(-90); metadata->setRawMax(90); }
@@ -286,7 +287,7 @@ void ChimeraMissionItem::setValue(const QString& key, double value)
     }
     if (splitPart() && key != "speed") return;
     if (!_values.contains(key)) return;
-    if ((key == "yaw" || key == "angle" || key == "fiducialRotation") && (value < 0 || value >= 360)) return;
+    if ((key == "yaw" || key == "angle" || key == "fiducialRotation" || key == "fiducialHeading") && (value < 0 || value >= 360)) return;
     if (_values[key] == value) return;
     if (QStringList{"width", "height", "fx", "fy", "cx", "cy"}.contains(key)) _cameraPreset.clear();
     _values[key] = value;
@@ -396,6 +397,7 @@ void ChimeraMissionItem::rebuild()
             parameters.remove("transitSpeed");
             parameters.remove("radius");
             parameters.remove("fiducialRotation");
+            parameters.remove("fiducialHeading");
             const bool configure = parameters != _generationValues;
             if (configure) _generationValues.clear();
             built = _planner->buildSurvey(_survey, generated, &owner, path, _error, _flightSurvey, configure);
@@ -534,6 +536,7 @@ bool ChimeraMissionItem::load(const QJsonObject& json, int sequence, QString& er
                 if (it.key() == "entryPoint") { it.value() = 0.; continue; }
                 if (it.key() == "radius") { it.value() = 1.; continue; }
                 if (it.key() == "fiducialRotation") { it.value() = 0.; continue; }
+                if (it.key() == "fiducialHeading") { it.value() = 90.; continue; }
                 if (it.key() == "transitSpeed") { it.value() = 5.; continue; }
             }
             if (!values.contains(it.key()) || !std::isfinite(values[it.key()].toDouble())) {

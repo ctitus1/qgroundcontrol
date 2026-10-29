@@ -101,6 +101,18 @@ ColumnLayout {
                 Layout.fillWidth: true
                 wrapMode: Text.WordWrap
             }
+            QGCLabel { text: qsTr("Fiducial heading relative to center"); Layout.fillWidth: true }
+            QGCSlider {
+                Layout.fillWidth: true
+                from: 0; to: 359; stepSize: 1
+                value: chimeraFleet.fiducialHeading
+                onMoved: chimeraFleet.fiducialHeading = value
+            }
+            QGCLabel {
+                text: qsTr("%1° — 0° faces the center; 90° faces sideways").arg(chimeraFleet.fiducialHeading.toFixed(0))
+                Layout.fillWidth: true
+                wrapMode: Text.WordWrap
+            }
             RowLayout {
                 QGCLabel {
                     text: qsTr("Rapid transit speed (m/s)")

@@ -285,6 +285,16 @@ void FleetPlanner::setFiducialRadius(double radius)
     fiducial()->setValue("radius",radius);
     synchronize();
 }
+double FleetPlanner::fiducialHeading() const
+{
+    return fiducial() ? fiducial()->values()["fiducialHeading"].toDouble() : 90.;
+}
+void FleetPlanner::setFiducialHeading(double heading)
+{
+    if (!fiducial() || !std::isfinite(heading) || heading < 0 || heading >= 360) return;
+    fiducial()->setValue("fiducialHeading",heading);
+    synchronize();
+}
 double FleetPlanner::rapidTransitSpeed() const
 {
     return domain() ? domain()->values()["transitSpeed"].toDouble() : 5.;
@@ -572,13 +582,17 @@ void FleetPlanner::synchronize()
             if (block->fleetRegion()==-2) {
                 block->setCoordinate(fiducial()->coordinate().atDistanceAndAzimuth(fiducialRadius(),inward+180+fiducialRotation()));
                 block->setValue("transitSpeed",rapidTransitSpeed());
+                block->setValue("yaw",CenterOut::normalizeAngle(inward+fiducialRotation()+fiducialHeading()));
             } else if (block->fleetRegion()>=0 && block->fleetRegion()<polygons.size()) {
                 block->setSearchCenter(searchCenter);
                 if (block->surveyAreaPolygon()->coordinateList()!=polygons[block->fleetRegion()]) block->surveyAreaPolygon()->setPath(polygons[block->fleetRegion()]);
             }
             if (block->kind()=="survey") block->setValue("angle",profile["trackAngle"].toDouble());
             if (block->kind()=="survey" || block->kind()=="vantage") block->setValue("transitSpeed",rapidTransitSpeed());
-            if (block->fleetRegion()!=-1 || block->kind()=="survey" || block->kind()=="vantage") { block->setValue("altitude",altitude); block->setValue("yaw",profile["heading"].toDouble()); }
+            if (block->fleetRegion()!=-1 || block->kind()=="survey" || block->kind()=="vantage") {
+                block->setValue("altitude",altitude);
+                if (block->fleetRegion() != -2) block->setValue("yaw",profile["heading"].toDouble());
+            }
         }
         for (int j=1;j<items->count();++j) if (auto* simple=qobject_cast<SimpleMissionItem*>(items->get(j))) {
             const auto command=simple->missionItem().command();
